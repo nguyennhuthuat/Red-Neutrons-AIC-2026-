@@ -1,0 +1,29 @@
+/.venv
+.venv
+venv/ 
+
+data/
+*.npy
+*.mp4 
+*.avi 
+faiss_index.bin
+
+.env 
+*.key
+
+*.pyc 
+__pycache__/
+
+# --- Streamlit --- 
+.streamlit/secrets.toml
+
+# --- Notebooks --- 
+.ipynb_checkpoints/
+
+# --- IDE/OS --- 
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+
