@@ -26,4 +26,9 @@ __pycache__/
 .DS_Store
 Thumbs.db
 
+# Kaggle
+kaggle.json
+.kaggle/
+
+CLAUDE.md 
 
