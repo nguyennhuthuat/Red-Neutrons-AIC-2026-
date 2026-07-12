@@ -10,7 +10,7 @@ Notes:
     - Query encoding MUST match the model BTC used to produce the features.
       HCMC 2023 features are 512-dim -> assumed CLIP ViT-B/32. The app checks
       the dim at startup and refuses to search on mismatch.
-    - Vietnamese handling (translation / multilingual CLIP) is Phuoc's module;
+    - Vietnamese handling (translation / multilingual CLIP) is not update;
       the `preprocess_query` hook below is where it plugs in.
 """
 
