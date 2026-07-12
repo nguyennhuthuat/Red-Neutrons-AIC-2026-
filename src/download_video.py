@@ -2,8 +2,11 @@
 import json
 import yt_dlp
 import os
-''' Choose the folder containing metadata JSON files and the folder
-to save downloaded videos '''
+''' 
+Choose the folder containing metadata JSON files and the folder to save downloaded videos:
+    info_folder_path: folder containing metadata JSON files
+    video_folder_path: folder to save downloaded videos
+'''
 # folder_path = os.path.join('data', 'hcmc2023', 'metadata')
 info_folder_path = os.path.join('..','data', 'metadata') # Example
 video_folder_path = os.path.join('..','data', 'video')  # Example
