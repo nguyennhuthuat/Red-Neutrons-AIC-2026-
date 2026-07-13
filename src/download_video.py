@@ -1,15 +1,25 @@
 ''' Install all video from metadata '''
 import json
+from pathlib import Path
 import yt_dlp
 import os
+
+'''Set up paths for metadata and video storage'''
+BASE_DIR = Path(__file__).resolve().parent
+
 ''' 
 Choose the folder containing metadata JSON files and the folder to save downloaded videos:
     info_folder_path: folder containing metadata JSON files
     video_folder_path: folder to save downloaded videos
 '''
-# folder_path = os.path.join('data', 'hcmc2023', 'metadata')
-info_folder_path = os.path.join('..','data', 'metadata') # Example
-video_folder_path = os.path.join('..','data', 'video')  # Example
+info_folder_path = BASE_DIR / ".." / "data" / "hcmc2023" / "data-batch-1" / "metadata"  # Example
+video_folder_path = BASE_DIR / ".." / "data" / "hcmc2023" / "original_videos"  # Example
+
+if not info_folder_path.exists():
+    print(f"Metadata folder {info_folder_path} does not exist. Please check the path.")
+    exit(1)
+if not video_folder_path.exists():
+    os.makedirs(video_folder_path)
 
 filenames = [f for f in os.listdir(info_folder_path) if f.endswith('.json')]
 for filename in filenames:
