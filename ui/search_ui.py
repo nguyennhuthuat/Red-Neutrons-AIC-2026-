@@ -125,5 +125,4 @@ if query:
                     f"t={hit['pts_time']:.1f}s · frame_idx={int(hit['frame_idx'])} "
                     f"· score={hit['score']:.3f}")
 else:
-    st.info("Enter a query to search. Artifacts expected in data/processed/ "
-            "— run src/prepare_data.py first.")
+    st.info("Enter a query to search.")
