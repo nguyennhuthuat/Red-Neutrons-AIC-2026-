@@ -13,6 +13,7 @@ Output (data/processed/):
 import os
 import sys
 import json
+import argparse 
 from pathlib import Path
 
 import numpy as np
@@ -24,23 +25,36 @@ except ImportError:
     faiss = None
     print("WARNING: faiss not installed. Run `pip install faiss-cpu` or `pip install faiss-gpu`. ")
 
-DATA_DIR = Path("data/hcmc2023")
-OUT_DIR = Path("data/processed")
-DATASET_SLUG = "mkimwp/hcmc-ai-challenge-2023"
+ROOT = Path(__file__).resolve().parent.parent
+DATASETS = {
+    "hcmc2023":{
+        "raw":             ROOT / "data" / "hcmc2023", 
+        "processed":       ROOT / "data" / "processed_hcmc2023", 
+        "clip_model":      "ViT-B-16-quickgelu", 
+        "clip_pretrained": "openai", 
+        "kaggle_slug":     "mkimwp/hcmc-ai-challenge-2023",
+    }, 
+    "hcmc2026":{
+        "raw":             ROOT / "data" / "hcmc2026", 
+        "processed":       ROOT / "data" / "processed_hcmc2026",
+        "clip_model":      "ViT-B-32-quickgelu", 
+        "clip_pretrained": "openai", 
+        "kaggle_slug":     None,
+    }
+}
 
-
-
-def download_dataset_if_missing(target_dir: Path = DATA_DIR):
-    """Download from Kaggle only if the target dir is missing or empty."""
-    if target_dir.exists() and any(target_dir.iterdir()):
-        print(f"[download] Dataset already present at {target_dir}, skipping.")
-        return
-    target_dir.mkdir(parents=True, exist_ok=True)
-    cmd = f"kaggle datasets download -d {DATASET_SLUG} -p {target_dir} --unzip"
-    print(f"[download] Running: {cmd}")
-    code = os.system(cmd)
-    if code != 0:
-        sys.exit("[download] Kaggle download failed. Check credentials / slug.")
+""" Download dataset 2023"""
+# def download_dataset_if_missing(target_dir: Path, slug: str):
+#     """Download from Kaggle only if the target dir is missing or empty."""
+#     if target_dir.exists() and any(target_dir.iterdir()):
+#         print(f"[download] Dataset already present at {target_dir}, skipping.")
+#         return
+#     target_dir.mkdir(parents=True, exist_ok=True)
+#     cmd = f"kaggle datasets download -d {slug} -p {target_dir} --unzip"
+#     print(f"[download] Running: {cmd}")
+#     code = os.system(cmd)
+#     if code != 0:
+#         sys.exit("[download] Kaggle download failed. Check credentials / slug.")
 
 
 def find_map_keyframe_csvs(root: Path) -> dict[str, Path]:
@@ -101,10 +115,12 @@ def keyframe_image_path(kf_dir: Path | None, n: int) -> str:
 
 
 
-def build_artifacts():
-    csvs = find_map_keyframe_csvs(DATA_DIR)
-    feats = find_feature_files(DATA_DIR)
-    kf_dirs = find_keyframe_dirs(DATA_DIR)
+def build_artifacts(cfg: dict):
+    data_dir = cfg["raw"]
+    out_dir = cfg["processed"]
+    csvs = find_map_keyframe_csvs(data_dir)
+    feats = find_feature_files(data_dir)
+    kf_dirs = find_keyframe_dirs(data_dir)
 
     if not csvs or not feats:
         sys.exit("[build] Missing CSVs or feature files. Check dataset layout "
@@ -185,30 +201,41 @@ def build_artifacts():
     norms[norms == 0] = 1.0
     features = features / norms
 
-    OUT_DIR.mkdir(parents=True, exist_ok=True)
-    metadata.to_parquet(OUT_DIR / "metadata.parquet", index=False)
-    np.save(OUT_DIR / "features.npy", features)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    metadata.to_parquet(out_dir / "metadata.parquet", index=False)
+    np.save(out_dir / "features.npy", features)
     print(f"[build] Saved metadata.parquet ({len(metadata)} rows) "
           f"and features.npy {features.shape}")
 
     if faiss is not None:
         index = faiss.IndexFlatIP(features.shape[1])
         index.add(features)
-        faiss.write_index(index, str(OUT_DIR / "faiss.index"))
+        faiss.write_index(index, str(out_dir / "faiss.index"))
         print(f"[build] Saved faiss.index ({index.ntotal} vectors)")
 
     # Save a small manifest so teammates can verify their build matches.
     manifest = {
+        "dataset": cfg["raw"].name,
+        "clip_model": cfg["clip_model"], 
+        "clip_pretrained": cfg["clip_pretrained"], 
         "num_videos": len(common),
         "num_keyframes": int(len(metadata)),
         "feature_dim": int(dim),
         "columns": list(metadata.columns),
     }
-    with open(OUT_DIR / "manifest.json", "w", encoding="utf-8") as fp:
+    with open(out_dir / "manifest.json", "w", encoding="utf-8") as fp:
         json.dump(manifest, fp, indent=2)
     print(f"[build] Manifest: {manifest}")
 
 
-if __name__ == "__main__":
-    download_dataset_if_missing()
-    build_artifacts()
+if __name__ == "__main__": 
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--dataset", choices= list(DATASETS), default="hcmc2026")
+    args = ap.parse_args()
+
+    cfg = DATASETS[args.dataset]
+    print(f"[main] Dataset: {args.dataset} -> {cfg['processed']}")
+
+    # if cfg["kaggle_slug"]: 
+    #     download_dataset_if_missing(cfg["raw"], cfg["kaggle_slug"])
+    build_artifacts(cfg)

@@ -1,28 +1,27 @@
 """
 search_ui.py — Minimal Streamlit search UI over the prepared artifacts.
 
-Requires artifacts from src/prepare_data.py in data/processed/:
+Requires artifacts from src/prepare_data.py in data/processed_hcmc2026/:
     metadata.parquet, faiss.index (or features.npy as fallback)
 
 Run:  streamlit run ui/search_ui.py
 
-Notes:
-    - Query encoding MUST match the model BTC used to produce the features.
-      HCMC 2023 features are 512-dim -> assumed CLIP ViT-B/32. The app checks
-      the dim at startup and refuses to search on mismatch.
-    - Vietnamese handling (translation / multilingual CLIP) is not update;
-      the `preprocess_query` hook below is where it plugs in.
 """
 
 from pathlib import Path
+import json
 
 import numpy as np
 import pandas as pd
 import streamlit as st
 
-PROCESSED = Path("data/processed")
-CLIP_MODEL = "ViT-B-16-quickgelu"
-CLIP_PRETRAINED = "openai"
+ROOT = Path(__file__).resolve().parent.parent
+DATASET = "hcmc2026"
+PROCESSED = ROOT / "data" / f"processed_{DATASET}"
+with open(PROCESSED / "manifest.json", encoding = "utf-8") as fp: 
+    MANIFEST = json.load(fp)
+CLIP_MODEL = MANIFEST["clip_model"]
+CLIP_PRETRAINED = MANIFEST["clip_pretrained"]
 
 st.set_page_config(page_title="RED-NEUTRONS · AIC 2026", layout="wide")
 
@@ -54,7 +53,7 @@ def preprocess_query(query: str) -> str:
 
     Plug Vietnamese->English translation or multilingual
     handling here. For now the query is passed through unchanged, so
-    English queries will work best with ViT-B/32.
+    English queries will work best.
     """
     return query.strip()
 
@@ -117,7 +116,7 @@ if query:
             with col:
                 img = hit.get("image_path", "")
                 if img and Path(img).exists():
-                    st.image(img, use_container_width=True)
+                    st.image(img, width="stretch")
                 else:
                     st.markdown(":grey_background[no image]")
                 st.caption(
