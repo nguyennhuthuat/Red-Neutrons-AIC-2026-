@@ -8,8 +8,15 @@ streamlit>=1.30.0
 
 opencv-python>=4.8.0
 
-google-generativeai>=0.4.0
-openai>=1.12.0
+# google-genai là SDK còn được hỗ trợ. KHÔNG thêm lại google-generativeai:
+# nó đã ngừng phát triển và cài cả hai dễ va nhau ở không gian tên `google`.
+google-genai>=1.0.0
+
+
+# transformers 5.x làm hỏng tokenizer SentencePiece của T5 -> envit5 không load nổi
+transformers>=4.40.0,<5
+sentencepiece>=0.2.0
+sacremoses>=0.1.1
 
 python-dotenv>=1.0.0
 requests>=2.31.0

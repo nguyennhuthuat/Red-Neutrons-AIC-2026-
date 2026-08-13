@@ -33,4 +33,7 @@ kaggle.json
 CLAUDE.md 
 /context
 
+.cache
+/.cache
+\.cache
 
