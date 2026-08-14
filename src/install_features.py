@@ -1,27 +1,15 @@
-"""
-install_features.py — thay bộ vector CLIP đang dùng bằng bộ mới mã hoá từ Kaggle.
+"""Thay bộ vector CLIP đang dùng bằng bộ mới mã hoá từ Kaggle.
 
-VÌ SAO CẦN SCRIPT RIÊNG thay vì copy tay: đổi bộ vector là đổi ba thứ PHẢI khớp
-nhau, sai một cái là hệ thống vẫn chạy nhưng trả kết quả rác —
-    features.npy   (vector ảnh)
-    faiss.index    (dựng lại TỪ features.npy, không tái dùng bản cũ)
-    manifest.json  (tên model để UI/eval encode CÂU HỎI bằng đúng model đó)
-
-Bẫy đã ghi ở memory data-hcmc2026: bộ 2023 chạy B-16, bộ 2026 chạy B-32, **cả hai
-đều 512 chiều** nên cái guard `qvec.shape[1] != index.d` trong UI KHÔNG bắt được
-nhầm lẫn. Lần này SigLIP2-L là 1024 chiều nên guard sẽ bắt — nhưng đừng trông chờ
-vào may mắn đó, manifest mới là nguồn sự thật.
-
-Kết quả đo trên 81 query (notebooks/kaggle_encode_corpus.ipynb, T4x2):
-    ViT-B-32-quickgelu/openai  (BTC cấp)      0.4765
-    ViT-L-14/openai                           0.5580
-    ViT-B-16-SigLIP2-384/webli                0.7556
-    ViT-L-16-SigLIP2-384/webli                0.7802   <- mặc định
-
-Chạy:
     python src/install_features.py --list
-    python src/install_features.py --model ViT-L-16-SigLIP2-384 --apply
-    python src/install_features.py --restore          # quay lại bộ của BTC
+    python src/install_features.py --model ViT-L-16-SigLIP2-512 --apply
+    python src/install_features.py --restore
+
+Cần script riêng vì đổi bộ vector là đổi BA thứ phải khớp nhau — `features.npy`,
+`faiss.index` (dựng lại, không tái dùng), `manifest.json` — và sai một cái thì hệ
+thống vẫn chạy, chỉ trả kết quả rác.
+
+Điểm đã đo của từng model và cơ sở chọn: docs/bao_cao_he_thong.tex, mục
+"Chọn encoder".
 """
 
 import argparse
@@ -35,14 +23,19 @@ ROOT = Path(__file__).resolve().parent.parent
 SRC = ROOT / "data" / "kernel_out"
 DST = ROOT / "data" / "processed_hcmc2026"
 
-# open_clip cần đúng cặp (tên model, trọng số) để encode CÂU HỎI cùng không gian
-# vector với ảnh. Suy từ tên file thì mong manh, nên tra bảng cho chắc.
+# Tra bảng thay vì suy từ tên file: encode câu hỏi sai cặp là sai không gian vector.
 PRETRAINED = {
     "ViT-B-32-quickgelu": "openai",
     "ViT-L-14": "openai",
     "ViT-B-16-SigLIP2-384": "webli",
     "ViT-L-16-SigLIP2-384": "webli",
+    "ViT-L-16-SigLIP2-512": "webli",
+    "ViT-SO400M-16-SigLIP2-384": "webli",
+    "ViT-gopt-16-SigLIP2-384": "webli",
 }
+
+# ⚠️ L-16-384 và L-16-512 ĐỀU 1024 chiều nên guard số chiều không phân biệt được.
+# Vì vậy install() lưu thêm vân tay `features_head_sha1`; xem kiem_khop().
 
 
 def available():
@@ -53,12 +46,37 @@ def available():
     return out
 
 
-def doc_manifest() -> dict:
-    """manifest hiện có, hoặc dict rỗng nếu MÁY NÀY CHƯA CÀI BỘ NÀO.
+def van_tay(p: Path) -> str:
+    """SHA-1 của 1 MB đầu file vector — đủ để phân biệt hai bộ CÙNG SỐ CHIỀU."""
+    import hashlib
+    with open(p, "rb") as f:
+        return hashlib.sha1(f.read(1024 * 1024)).hexdigest()[:16]
 
-    Trường hợp chưa có là bình thường chứ không phải lỗi: người mới clone repo về
-    rồi tải bộ vector từ Kaggle sẽ chưa có manifest nào cả. Trước đây hàm gọi
-    thẳng read_text() nên máy mới cài luôn chết ngay ở dòng đầu.
+
+def kiem_khop() -> None:
+    """Nổ nếu features.npy đang dùng KHÔNG phải bộ mà manifest khai.
+
+    Rẻ (đọc 1 MB) nên gọi được ở mọi điểm vào. Manifest cũ chưa có vân tay thì
+    bỏ qua — không ép chạy lại install chỉ vì thiếu trường mới.
+    """
+    man = doc_manifest()
+    mong = man.get("features_head_sha1")
+    if not mong:
+        return
+    thuc = van_tay(DST / "features.npy")
+    if thuc != mong:
+        raise SystemExit(
+            f"features.npy KHÔNG khớp manifest: vân tay {thuc} nhưng manifest "
+            f"khai {mong} cho {man.get('clip_model')}.\n"
+            f"Hai bộ SigLIP2-L (384 và 512) cùng 1024 chiều nên không guard nào "
+            f"khác bắt được. Chạy lại: python src/install_features.py "
+            f"--model {man.get('clip_model')} --apply")
+
+
+def doc_manifest() -> dict:
+    """manifest hiện có, hoặc dict rỗng nếu máy này chưa cài bộ nào.
+
+    Chưa có là bình thường chứ không phải lỗi — máy mới clone về thì chưa có.
     """
     p = DST / "manifest.json"
     return json.loads(p.read_text(encoding="utf-8")) if p.exists() else {}
@@ -117,8 +135,7 @@ def install(model: str):
     print(f"[ghi] features.npy ({(DST/'features.npy').stat().st_size/1024**2:.0f} MB)")
 
     import faiss
-    # IndexFlatIP + vector đã L2-chuẩn hoá = tìm theo cosine. Dựng LẠI từ đầu chứ
-    # không sửa index cũ: số chiều đổi thì index cũ vô dụng.
+    # IndexFlatIP + vector đã chuẩn hoá = tìm theo cosine. Dựng LẠI từ đầu.
     index = faiss.IndexFlatIP(x.shape[1])
     index.add(x)
     faiss.write_index(index, str(DST / "faiss.index"))
@@ -129,6 +146,7 @@ def install(model: str):
         "clip_pretrained": PRETRAINED[model],
         "feature_dim": int(x.shape[1]),
         "features_source": feats_path.name,
+        "features_head_sha1": van_tay(DST / "features.npy"),
     })
     man_path.write_text(json.dumps(man, ensure_ascii=False, indent=2), encoding="utf-8")
     print(f"[ghi] manifest.json -> {model}/{PRETRAINED[model]}")
@@ -152,7 +170,7 @@ def restore():
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
-    ap.add_argument("--model", default="ViT-L-16-SigLIP2-384")
+    ap.add_argument("--model", default="ViT-L-16-SigLIP2-512")
     ap.add_argument("--apply", action="store_true")
     ap.add_argument("--list", action="store_true")
     ap.add_argument("--restore", action="store_true")
