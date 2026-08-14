@@ -1,0 +1,51 @@
+query_id,text_vi,question_vi,answer,kind,video_id,n,frame_idx,frame_idx_min,frame_idx_max,src_query,scene_kf
+q01,"Học sinh tiểu học mặc áo sơ mi trắng ngồi trong lớp học ở vùng quê, phía sau là các tình nguyện viên áo xanh",Các học sinh đeo khăn quàng cổ màu gì?,màu đỏ,nhìn,L21_V005,47,5481,5397,5576,a01,3
+q02,"Bàn thờ trong đình chùa bày rất nhiều lễ vật, đèn sen vàng và giỏ quà buộc nơ đỏ",Trên bàn thờ có mấy lon nước ngọt và của hãng nào?,có lon Coca-Cola,nhìn,L21_V010,49,5230,5070,5330,a02,4
+q03,"Một người đàn ông mặc áo choàng đỏ đen ngồi đọc văn bản trong phòng xử án, phía sau là hai chiếc ghế gỗ chạm hoa văn",Tấm biển màu đỏ đặt trước mặt người này ghi chữ gì?,THẨM PHÁN,đọc chữ,L22_V016,305,30180,29887,30780,a08,7
+q04,"Một tay đua xe đạp mặc áo xanh giơ một tay ăn mừng khi về đích, khán giả vẫy cờ cam hai bên","Theo dòng chữ trên màn hình, đây là chặng thứ mấy?",chặng 17,đọc chữ,L23_V017,40,4714,3685,6187,a12,21
+q05,Một tay đua xe đạp giơ tay ăn mừng chiến thắng giữa đám đông khán giả,Trên áo đấu của tay đua có tên nhà tài trợ nào?,Nhựa Bình Minh (BM Plasco),đọc chữ,L23_V017,40,4714,3685,6187,a12b,21
+q06,"Sân thi đấu múa lân trên cọc cao ngoài trời, một người đánh trống đứng quay lưng ở tiền cảnh, khán giả ngồi kín phía sau",Con lân đang đứng trên cọc có màu gì?,đen và vàng kim,nhìn,L24_V023,134,14136,12770,15381,a16,25
+q07,Một nhóm nữ sinh biểu diễn nhảy trên sân khấu có màn hình LED lớn phía sau,Nhóm biểu diễn mặc áo màu gì và quần màu gì?,"áo đỏ, quần trắng",nhìn,L25_V019,281,21150,21120,21225,a20,3
+q08,"Một đĩa món ăn chiên vàng bày trên nền rau xanh, bên cạnh có chén nước chấm",Món ăn được bày trên loại rau gì?,xà lách,nhìn,L26_V157,138,6523,6493,6686,a24,4
+q09,"Hai bàn tay đeo găng đang cầm quả dứa vừa hái tại vườn, bên cạnh có sọt nhựa",Sọt nhựa đựng dứa có màu gì?,màu đỏ,nhìn,L27_V013,113,4320,4179,5166,a30,15
+q10,"Một người đàn ông đứng trước cửa đình chùa có mái ngói men xanh, phía trên treo đèn lồng",Đèn lồng treo trước cửa có màu gì?,màu đỏ,nhìn,L28_V015,156,10262,10054,10292,a32,5
+q11,Một bác sĩ mặc áo blouse trắng đang siêu âm cho bệnh nhân trong phòng khám,Bác sĩ đang siêu âm ở bộ phận nào của bệnh nhân?,chân (vùng bắp chân / khoeo chân),nhìn,L30_V009,79,7248,7218,7278,a37,1
+q12,Một nhân viên vườn thú mặc đồng phục xanh rêu đang cho đàn chim ăn bên hồ nước,Đàn chim trong ảnh là loài gì?,hồng hạc,nhìn,L30_V011,7,558,456,588,a38,2
+q13,Một nhân viên vườn thú đang cúi xuống bên xô thức ăn cạnh hồ nuôi chim,Người này đeo khẩu trang màu gì?,màu xanh dương,nhìn,L30_V011,7,558,456,588,a38b,2
+q14,"Hai chiếc máy bay chở khách đang lăn trên đường băng sân bay, một chiếc sơn xanh và một chiếc sơn trắng",Hai chiếc máy bay thuộc hai hãng hàng không nào?,Vietnam Airlines và Bamboo Airways,đọc chữ,L29_V002,388,21749,21645,21823,a72,10
+q15,"Đường phố ngập nước ban đêm dưới mưa lớn, dòng nước chảy xiết, xe cộ nhích chậm phía xa",Đèn quay của xe cứu hộ ở mép trái ảnh phát ra những màu gì?,đỏ và xanh dương,nhìn,L21_V017,41,3779,3779,4770,a03,9
+q16,Một con robot màu xanh quân đội đứng trên nền đất phủ lá khô trong rừng,Con robot này di chuyển bằng mấy chân?,bốn,nhìn,L22_V009,198,18459,17721,18655,a07,15
+q17,"Tốp đua xe đạp nước rút về đích trên đại lộ, hai bên là hàng rào chắn và khán giả",Người ngồi sau chiếc xe máy dẫn đoàn ở phía trước mặc áo màu gì?,màu đỏ,nhìn,L23_V015,55,6695,5625,7390,a11,18
+q18,"Hai người dẫn chương trình mặc áo thun trắng cầm micro đứng giữa đám đông ngoài trời, một người quấn khăn trắng trên đầu",Đám đông vây quanh hai người dẫn chương trình mặc áo màu gì?,áo đỏ,nhìn,L24_V012,23,1664,768,2304,a14,22
+q19,"Bàn thí nghiệm hoá học bày ống nghiệm và bình tam giác, phía sau là người mặc áo blouse trắng",Dung dịch trong hai bình tam giác đặt hai bên bàn có màu gì?,hồng và xanh lá,nhìn,L25_V006,213,17763,17746,17763,a19,2
+q20,Đầu bếp nam mặc áo blouse trắng đứng cạnh nữ dẫn chương trình đeo tạp dề vàng trong phòng bếp trường quay,Tấm biển đỏ treo trên tường phía sau ghi tên chương trình là gì?,Món Ngon Mỗi Ngày,đọc chữ,L26_V134,31,1540,1540,1540,a23,1
+q21,"Người đàn ông trẻ đang thắp nhang trong đình, phía sau là bàn thờ đỏ và nhiều người lớn tuổi",Người đàn ông trẻ đang thắp nhang mặc áo màu gì?,áo xanh lá,nhìn,L27_V001,112,4050,4025,4084,a28,3
+q22,"Người đàn ông mặc áo dài tay xanh dương đang chặt lá dừa nước bên mép kênh, xung quanh là tàu dừa nước cao",Người đàn ông đội loại mũ nón gì trên đầu?,nón lá,nhìn,L28_V016,183,9855,8775,10665,a33,22
+q23,"Hai người phụ nữ đứng trò chuyện phía sau dãy hũ thuỷ tinh nắp bạc xếp kín mặt bàn, phía sau là kệ hàng",Người phụ nữ bên phải mặc áo màu gì?,màu cam,nhìn,L29_V015,251,13230,13044,13500,a35,9
+q24,Người đàn ông mặc áo thun hồng cúi người trao túi ni lông qua hàng rào sắt cho những người ngồi bên trong,"Người đàn ông ngồi bên trong hàng rào, đối diện người áo hồng, mặc áo màu gì?",áo vàng nhạt,nhìn,L30_V019,30,2374,2064,3215,a39,18
+q25,"Đoàn xe máy dừng chờ đèn ở ngã tư đông đúc, bên phải là một xe tải chở hàng cỡ lớn",Chiếc xe tải bên phải đang chở vật gì?,hai ống cống bê tông,nhìn,L21_V021,50,6081,5793,6833,a04,10
+q26,"Đoàn cán bộ đi bộ trong con hẻm hẹp treo cờ đỏ sao vàng, hai bên là nhà dân và người đứng xem",Chiếc xe máy dựng bên lối đi có màu gì?,màu đỏ,nhìn,L22_V023,51,4380,4207,4380,a09,4
+q27,"Phi hành gia mặc bộ đồ vũ trụ trắng ngồi trong khoang, phía trên là màn hình điều khiển",Kính che mặt của bộ đồ vũ trụ có màu gì?,vàng đồng phản quang,nhìn,L21_V024,194,19894,19530,19894,a05,4
+q28,"Bốn thanh niên bị che mặt đứng cạnh mấy chiếc xe máy, hai bên là công an mặc quân phục xanh lá",Có mấy công an đứng hai bên nhóm thanh niên?,hai người,nhìn,L22_V024,209,21639,21639,22148,a10,6
+q29,"Một tay đua đạp đơn độc trên đường nhựa, khán giả đứng xem dọc hai bên",Tay đua mặc áo đấu màu gì?,màu vàng,nhìn,L23_V019,24,2828,1275,4236,a13,24
+q30,Cận cảnh đầu lân màu trắng viền đen và vàng đang biểu diễn trước phông nền tím hồng,Phía trước đầu lân có mấy quả cầu đỏ?,hai quả,nhìn,L24_V016,38,3472,2272,4491,a15,25
+q31,"Thầy giáo mặc áo sơ mi kẻ ngồi bên laptop giảng bài, bên cạnh là sơ đồ phả hệ di truyền chiếu trên màn hình","Theo bảng tên hiện dưới màn hình, thầy giáo này dạy ở trường nào?",Trường THPT chuyên Lê Hồng Phong,đọc chữ,L25_V047,166,14700,12900,15600,a21,19
+q32,"Bàn tay cầm chảo rưới sốt chua ngọt màu cam lên đĩa sứ xanh lá đậm, bên cạnh là một chén nước sốt nhỏ",Trên đĩa có mấy quả cà chua bi?,ba quả,nhìn,L26_V412,143,6144,6039,6151,a25,3
+q33,Người phụ nữ đội nón lá mặc áo bà ba hoa văn sặc sỡ đang hái lá trong vườn,Khu vườn phía sau được che chắn bằng gì?,lưới che,nhìn,L27_V012,108,4277,4045,4348,a29,8
+q34,"Nhìn từ mũi thuyền gỗ ra khúc sông rộng, bên trái là dãy nhà ven sông",Ở phía xa cuối khúc sông có công trình gì bắc ngang?,một cây cầu bê tông,nhìn,L28_V024,216,12150,12150,12285,a34,2
+q35,Sân phơi rộng lớn với hàng trăm vỉ tre xếp thành hàng dài dưới nắng,Trên các vỉ tre đang phơi thứ gì?,cá khô,nhìn,L29_V019,116,1335,1323,1350,a36,20
+q36,"Hai người phụ nữ khiêng thùng hàng cứu trợ trên vỉa hè, một người đội mũ bảo hiểm, xung quanh chất nhiều thùng giấy",Những người tình nguyện đứng phía sau mặc áo màu gì?,áo xanh dương,nhìn,L30_V031,45,2275,2275,2348,a40,3
+q37,"Người phụ nữ đeo găng tay cao su hồng ngồi bên quầy ven đường, trước mặt chất một đống hoa dài",Loại hoa chất trước mặt người phụ nữ là hoa gì?,bông súng,nhìn,L21_V025,56,5880,5880,6282,a06,7
+q38,"Người đàn ông tóc bạc đeo kính gọng đen mặc vest xám đứng sau bục gỗ phát biểu, phía sau là các lá cờ và huy hiệu tròn",Dòng chữ tiếng Anh vòng quanh huy hiệu trên phông nền là gì?,BOARD OF GOVERNORS,đọc chữ,L21_V001,193,23235,23163,23498,a42,5
+q39,Thầy giáo mặc áo sơ mi đen đứng bên slide bài giảng Ngữ văn có hình vẽ cây và sách,"Theo bảng tên dưới màn hình, thầy giáo này dạy ở trường nào?","Trường THPT Bùi Thị Xuân, TPHCM",đọc chữ,L25_V054,300,32100,31599,33900,a22,17
+q40,"Cột mốc biên giới bằng đá granite khắc chữ đỏ, bên cạnh là lá cờ đỏ sao vàng bay trong gió",Cột mốc này mang số hiệu bao nhiêu?,246 (1),đọc chữ,L28_V001,233,13635,13635,13635,a66,1
+q41,Máy bay cánh quạt nhỏ màu trắng sọc đỏ đậu trên sân bê tông trước một toà nhà thấp,Số hiệu đăng ký sơn trên thân máy bay là gì?,N182WT,đọc chữ,L22_V007,128,12840,12570,13310,a45,7
+q42,"Tượng đồng một người đàn ông giơ tay chào đứng trước bức phù điêu đá lớn, hai bên có cờ đỏ sao vàng",Luống hoa trồng phía trước tượng đài có màu gì?,màu hồng,nhìn,L23_V002,74,8675,8055,8675,a48,5
+q43,Con lân vàng cam biểu diễn trên cọc sắt ngoài trời ban ngày,Vật trang trí lớn ở bên trái khung hình có những màu gì?,đỏ và xanh dương,nhìn,L24_V026,43,3224,2356,4340,a17,25
+q44,"Hai người đàn ông đứng sau bàn bếp trong trường quay, một người mặc áo đầu bếp trắng",Người đàn ông bên phải mặc áo thun màu gì?,xanh lá,nhìn,L26_V432,34,1408,1387,1550,a26,4
+q45,"Những rổ nhựa đựng đầy cá đồng màu sẫm đặt trên nền gạch, một bàn tay đeo găng đang bốc cá lên",Các rổ nhựa đựng cá có những màu gì?,xanh dương và đỏ,nhìn,L27_V016,214,4031,3583,4320,a31,14
+q46,"Nhìn từ trên cao cửa sông rộng với hàng chục tàu cá đậu xếp dọc bờ, phía sau là khu dân cư",Những chiếc tàu cá đậu ven bờ chủ yếu sơn màu gì?,xanh lá,nhìn,L29_V003,58,1091,1082,1146,a73,3
+q47,Người đàn ông cúi xuống sửa một chiếc máy ảnh trên bàn làm việc bừa bộn đầy dụng cụ và chai lọ,"Phía sau trên bàn xếp nhiều vật hình trụ màu đen, đó là gì?",ống kính,nhìn,L30_V095,90,5136,5029,5160,a41,4
+q48,Khói trắng bốc lên từ mái một toà nhà đá cổ kiểu tân cổ điển nhiều tầng,Vật gì che khuất một phần chân toà nhà ở tiền cảnh?,hàng cây xanh,nhìn,L21_V018,178,17167,17167,18030,a43,7
+q49,Cận cảnh nhóm tay đua xe đạp gò lưng nước rút trên đường phố,Tay đua dẫn đầu đoàn mặc áo đấu màu gì?,màu đỏ,nhìn,L23_V005,12,1000,138,2125,a49,21
+q50,Đám cháy lớn ban đêm với ngọn lửa cam và khói cuồn cuộn phía sau một công trình,Loại cây nào in bóng lên nền lửa ở tiền cảnh?,cây dừa (cây họ cọ),nhìn,L22_V001,178,20343,20343,20343,a44,1
