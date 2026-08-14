@@ -1,40 +1,10 @@
-"""
-rerank.py — tầng re-rank: xáo lại thứ tự rổ ứng viên do CLIP/FAISS trả về.
+"""Tầng chấm lại: xáo thứ tự rổ ứng viên do CLIP/FAISS trả về.
 
-VÌ SAO CẦN TẦNG NÀY (số đo trên 81 query bộ eval 2026, xem eval/queries_hcmc2026.csv)
+Chỉ đổi thứ tự BÊN TRONG rổ top-K, nên không bao giờ đổi được R@K — muốn đụng
+R@K thì phải chấm toàn corpus (`src/ensemble.py`).
 
-    đáp án nằm ở hạng nào trong rổ CLIP:
-        R@1 0.235 · R@5 0.395 · R@20 0.506 · R@50 0.593 · R@100 0.654
-        R@200 0.741 · R@500 0.802 · R@1000 0.877 · R@2000 0.975
-
-    71/81 query đã có đáp án trong rổ top-1000. Bài toán KHÔNG còn là "tìm không
-    ra" mà là "xếp sai chỗ". Re-rank hoàn hảo trên rổ 100 cho FINAL 0.654, trên
-    rổ 1000 cho 0.877 — so với 0.4765 đang có.
-
-    Lưu ý bản chất: re-rank trên rổ top-K KHÔNG BAO GIỜ đổi R@K, nó chỉ chia lại
-    thứ hạng bên trong rổ. Rổ càng sâu trần càng cao nhưng càng đắt.
-
-⚠️ MỐC ĐÃ ĐỔI (2026-08-09): hệ thống chuyển từ ViT-B-32 của BTC sang
-   ViT-L-16-SigLIP2-384/webli, nền đi từ 0.4765 lên **0.7802**. Mọi con số bên
-   dưới đo trên nền CŨ — giữ lại vì bài học vẫn đúng (cái gì ăn, cái gì không),
-   nhưng ĐỪNG trích như mốc hiện hành. Xem src/install_features.py.
-
-ĐÃ THỬ NHỮNG GÌ (FINAL, nền CŨ = 0.4765)
-
-    đa dạng hoá ≤3 khung/video      0.4346  ❌ lỗ nặng
-    làm mượt thời gian              0.4148  ❌ lỗ nặng
-    prior video từ chính CLIP       0.4914  ~nhiễu
-    objects BM25 (score BTC cấp)    0.4840  ~nhiễu
-    ASR mức video                   0.4790  ~nhiễu
-    ── những cách trên đều KHÔNG thêm thông tin mới, hoặc chỉ thêm tín hiệu yếu ──
-    encoder B-16 chấm lại rổ        0.5185  ✅
-    VLM Gemini chấm lại rổ-100      0.5383  ✅
-    ★ GHÉP CẢ HAI                   0.5531  ✅ +16% so với nền, R@1 0.235→0.383
-
-    Bài học đọng lại: xáo lại thứ tự mà không mang THÔNG TIN MỚI vào thì lỗ, vì
-    thứ tự của CLIP vốn đã là cách dùng tốt nhất thông tin của chính CLIP. Chỉ
-    thứ vừa NHÌN được ảnh vừa ĐỌC được câu (VLM) hoặc nhìn ảnh bằng con mắt tinh
-    hơn (encoder mạnh hơn) mới sửa được lỗi.
+Danh sách những cách đã thử và bị loại, cùng cơ sở đo: xem
+docs/bao_cao_he_thong.tex, mục "Tầng xếp hạng" và "Các hướng đã đóng bằng số đo".
 """
 
 from __future__ import annotations
@@ -51,12 +21,9 @@ import numpy as np
 ROOT = Path(__file__).resolve().parent.parent
 CACHE_DIR = ROOT / "eval" / ".cache"
 
-# Gửi bao nhiêu ảnh trong MỘT lần gọi Gemini. 20 là điểm cân bằng đã chạy thật:
-# một lần gọi ~5k token (rẻ hơn nhiều so với 20 lần gọi lẻ) mà model vẫn chấm
-# phân biệt được — trung bình chỉ 2,2/20 ảnh được 10 điểm, 3,2 mức điểm mỗi rổ.
-VLM_BATCH = 20
-# CLIP nhìn ảnh ở 224px nên gửi ảnh to hơn chỉ tốn token. 224 vừa đủ cho VLM.
-VLM_PX = 224
+VLM_BATCH = 20        # ảnh mỗi lời gọi; rẻ hơn hẳn gọi lẻ mà model vẫn phân biệt
+VLM_PX = 224          # CLIP nhìn ảnh ở 224px, gửi to hơn chỉ tốn token
+VLM_TIMEOUT_MS = 90_000   # chỉ để chặn treo hẳn; một mẻ bình thường mất 5-8 giây
 
 PROMPT = """Bạn đang chấm điểm cho một hệ thống tìm kiếm video.
 Câu truy vấn: "{qt}"
@@ -83,10 +50,8 @@ def _thumb(path: str | Path, px: int = VLM_PX) -> bytes:
 
 
 def zscore(a: np.ndarray) -> np.ndarray:
-    """Chuẩn hoá theo TỪNG HÀNG (mỗi hàng = một query).
-
-    Bắt buộc phải có trước khi cộng hai nguồn điểm: cosine CLIP nằm quanh
-    0,2-0,35 còn điểm VLM là 0-10. Cộng thẳng thì VLM nuốt trọn CLIP.
+    """Chuẩn hoá theo từng hàng. Bắt buộc trước khi cộng hai nguồn điểm:
+    cosine CLIP quanh 0,2-0,35 còn điểm VLM là 0-10.
     """
     a = np.asarray(a, dtype=np.float64)
     if a.ndim == 1:
@@ -123,13 +88,10 @@ def _key(query: str, paths, px: int, model: str) -> str:
 # ───────────────────────── nhiều khoá API ─────────────────────────
 
 def api_keys() -> list[str]:
-    """Mọi khoá Gemini có trong .env, theo thứ tự ưu tiên.
+    """Mọi khoá Gemini trong .env, theo thứ tự ưu tiên.
 
-    Free tier bóp theo NGÀY, và một buổi đo có thể ngốn hơn 1.000 lần gọi (đã
-    dính: hết hạn mức giữa lúc đang chạy eval, job kẹt trong vòng retry vô ích).
-    Có khoá dự phòng thì đổi khoá rồi chạy tiếp, không mất công đã làm.
-
-    Đặt thêm khoá bằng cách khai báo GEMINI_API_KEY_2, _3, … trong .env.
+    Thêm khoá bằng GEMINI_API_KEY_2, _3, … — free tier bóp theo ngày và một buổi
+    đo ngốn hơn 1.000 lần gọi.
     """
     try:
         from dotenv import load_dotenv
@@ -147,21 +109,13 @@ def api_keys() -> list[str]:
 
 
 def _is_auth_error(e: Exception) -> bool:
-    """401/403 = khoá SAI hoặc chưa bật API ⇒ bỏ ngay, thử lại là phí.
-
-    Khác hẳn 429: 429 có thể do chặn theo phút (chờ là qua), còn khoá sai thì
-    chờ đến sáng cũng vẫn sai.
-    """
+    """401/403 = khoá sai hoặc chưa bật API ⇒ bỏ ngay, thử lại là phí."""
     s = f"{type(e).__name__} {e}"
     return "401" in s or "403" in s or "UNAUTHENTICATED" in s or "PERMISSION_DENIED" in s
 
 
 def _is_quota_error(e: Exception) -> bool:
-    """429/RESOURCE_EXHAUSTED = hết hạn mức ⇒ đổi khoá. Lỗi khác thì thử lại.
-
-    Phân biệt hai loại là cần thiết: 503 hay lỗi mạng thì đổi khoá vô ích (khoá
-    nào cũng gặp), còn 429 thì thử lại bao nhiêu lần cũng vô ích.
-    """
+    """429 = hết hạn mức ⇒ đổi khoá. Lỗi khác (503, mạng) thì thử lại."""
     s = f"{type(e).__name__} {e}"
     return "429" in s or "RESOURCE_EXHAUSTED" in s or "quota" in s.lower()
 
@@ -189,10 +143,11 @@ class _Clients:
         if self.i >= len(self._keys):
             return None
         if self.i not in self._made:
-            # GIỮ client trong dict: nếu tạo rồi vứt (vd genai.Client(...).models...)
-            # thì đối tượng bị thu hồi rác và httpx đóng kết nối, gây lỗi khó hiểu
-            # "Cannot send a request, as the client has been closed". Đã dính.
-            self._made[self.i] = genai.Client(api_key=self._keys[self.i])
+            # Phải GIỮ tham chiếu client, và phải có timeout — xem sổ bẫy trong
+            # báo cáo. Cả hai lỗi này đều biểu hiện thành thứ khác hẳn nguyên nhân.
+            self._made[self.i] = genai.Client(
+                api_key=self._keys[self.i],
+                http_options={"timeout": VLM_TIMEOUT_MS})
         return self._made[self.i]
 
     def retire(self, verbose: bool = True):
@@ -215,13 +170,10 @@ _CLIENTS = _Clients()
 def vlm_scores(query_vi: str, image_paths, *, model: str | None = None,
                px: int = VLM_PX, batch: int = VLM_BATCH, sleep: float = 1.5,
                cache: _Cache | None = None, verbose: bool = False) -> np.ndarray:
-    """Chấm 0-10 cho từng ảnh. Trả mảng cùng độ dài và cùng thứ tự image_paths.
+    """Chấm 0-10 cho từng ảnh, cùng thứ tự `image_paths`.
 
-    Dùng thẳng câu TIẾNG VIỆT — Gemini đọc tốt, đây là chỗ duy nhất trong cả
-    pipeline mà tiếng Việt không phải điểm yếu (CLIP thì tiếng Việt = 0 tuyệt đối).
-
-    Chia rổ thành nhiều mẻ `batch` ảnh: thang 0-10 là TUYỆT ĐỐI (không phải xếp
-    hạng tương đối) nên điểm giữa các mẻ so được với nhau.
+    Nhận thẳng câu tiếng Việt. Chia rổ thành nhiều mẻ được vì thang 0-10 là tuyệt
+    đối chứ không phải xếp hạng tương đối, nên điểm giữa các mẻ so được với nhau.
     """
     from google.genai import types
 
@@ -280,18 +232,23 @@ def vlm_scores(query_vi: str, image_paths, *, model: str | None = None,
                     # đã dính, khiến cả lượt eval hỏng.)
                     quota_hits += 1
                     if quota_hits == 1:
-                        if verbose:
-                            print("    [API] 429 — chờ 30s xem có phải chặn theo phút",
-                                  flush=True)
+                        # In BẤT KỂ verbose. Đây là lúc job đứng im 30 giây mà
+                        # không tiêu CPU — nếu không in thì nó trông y hệt một job
+                        # treo cứng, và người đang xem sẽ đi chẩn đoán nhầm chỗ
+                        # (đã mất thời gian vì đúng chuyện này).
+                        print("    [API] 429 — chờ 30s xem có phải chặn theo phút",
+                              flush=True)
                         time.sleep(30)
                         continue
                     if clients.retire() is None:
                         break
                     quota_hits = 0          # khoá mới, đếm lại từ đầu
                     continue
-                if verbose:
-                    print(f"    VLM lỗi ({attempt + 1}/4): {type(e).__name__} {str(e)[:120]}")
+                print(f"    [API] lỗi ({attempt + 1}/5): {type(e).__name__} "
+                      f"{str(e)[:120]}", flush=True)
                 if attempt < 3:
+                    print(f"    [API] chờ {20 * (attempt + 1)}s rồi thử lại",
+                          flush=True)
                     time.sleep(20 * (attempt + 1))
         if got is None:
             # Hỏng cả 4 lần: trả NaN cho mẻ này. KHÔNG cache thất bại — cache
@@ -306,17 +263,13 @@ def vlm_scores(query_vi: str, image_paths, *, model: str | None = None,
 
 
 def basket_looks_wrong(scores: np.ndarray, threshold: float = 10.0) -> bool:
-    """VLM tự báo 'đáp án không nằm trong rổ này'.
+    """Luật CŨ: đỉnh điểm VLM < 10 ⇒ đáp án không nằm trong rổ.
 
-    ⚠️ **ĐỪNG DÙNG CHO NỀN SigLIP2 — dùng `basket_uncertain` thay thế.**
-    Trên nền ViT-B-32 luật này đúng 83% (tỉ lệ nền 49%). Trên nền SigLIP2-L đo
-    lại chỉ còn **31% chính xác, 31% độ phủ**: top-20 giờ sát nghĩa đến mức luôn
-    có ảnh xứng đáng 10 điểm dù đúng khung vắng mặt. Giữ hàm này để đối chiếu
-    lịch sử và cho trường hợp quay lại encoder yếu.
+    ⚠️ Đừng dùng cho nền SigLIP2 — chỉ còn 31% chính xác (nền B-32 là 83%).
+    Dùng `basket_uncertain`. Giữ lại để đối chiếu và cho encoder yếu.
 
-    Không có điểm nào hợp lệ (API hỏng) thì trả False: lúc đó ta KHÔNG BIẾT rổ
-    tốt hay xấu, mà báo "đáp án không nằm trong rổ" là đổ oan cho dữ liệu trong
-    khi lỗi nằm ở đường mạng. Bên gọi tự kiểm `all_failed()` để báo đúng nguyên nhân.
+    API hỏng hết thì trả False: lúc đó ta KHÔNG BIẾT rổ tốt hay xấu, báo "đáp án
+    không có trong rổ" là đổ oan cho dữ liệu. Bên gọi tự kiểm `all_failed()`.
     """
     s = np.asarray(scores, dtype=np.float64)
     s = s[~np.isnan(s)]
@@ -325,28 +278,13 @@ def basket_looks_wrong(scores: np.ndarray, threshold: float = 10.0) -> bool:
 
 def basket_uncertain(base_scores, *, shallow: int = 20,
                      threshold: float = 0.12) -> bool:
-    """Rổ nông có đáng ngờ không? Dựa trên BIÊN ĐỘ điểm giữa hạng 1 và hạng cuối.
+    """Rổ nông có đáng ngờ không, dựa trên biên độ điểm giữa hạng 1 và hạng cuối.
 
-    Trực giác: rổ "phẳng" nghĩa là encoder không phân biệt nổi 20 ứng viên —
-    đúng lúc đáp án hay vắng mặt. Rổ "dốc" nghĩa là nó tự tin, thường là đúng.
+    Rổ "phẳng" = encoder không phân biệt nổi 20 ứng viên = đáp án hay vắng mặt.
+    AUC 0.907; ngưỡng 0.12 gắn cờ ~26% query và bắt được 85% query thật sự hỏng.
 
-    ĐO TRÊN 77 QUERY (SigLIP2-L), dự báo "đáp án KHÔNG nằm trong top-20":
-        biên độ tương đối (s[0]-s[19])/s[0]   AUC **0.907**
-        biên độ tuyệt đối s[0]-s[19]          AUC 0.918
-        điểm top-1                            AUC 0.601
-        đỉnh điểm VLM (luật cũ)               AUC 0.585
-        số ảnh được VLM cho 10 điểm           AUC 0.538
-    Trung bình biên độ: 0.02 khi hỏng vs 0.06 khi ổn — chênh 3 lần.
-
-    Dùng biên độ TƯƠNG ĐỐI dù AUC nhỉnh thua: tuyệt đối gắn chặt với thang điểm
-    của một encoder cụ thể (cosine SigLIP2 quanh 0.19, model khác sẽ khác) nên
-    đổi encoder là phải dò lại ngưỡng. Tương đối thì bền hơn.
-
-    Ngưỡng 0.12 ⇒ gắn cờ ~26% số query, bắt được **85%** query thật sự hỏng.
-
-    ⚠️ ĐỪNG dùng lại luật cũ `basket_looks_wrong` cho việc này: nó đo trên nền
-    ViT-B-32 (83% chính xác) nhưng sang nền SigLIP2 tụt còn **31%**, vì top-20
-    giờ sát nghĩa đến mức luôn có ảnh xứng đáng 10 điểm dù đáp án thật vắng mặt.
+    Dùng biên độ TƯƠNG ĐỐI dù AUC nhỉnh thua tuyệt đối: tuyệt đối gắn với thang
+    cosine của một encoder cụ thể nên đổi encoder là phải dò lại ngưỡng.
     """
     s = np.asarray(base_scores, dtype=np.float64)[:shallow]
     if len(s) < 2 or s[0] <= 0:
@@ -357,20 +295,14 @@ def basket_uncertain(base_scores, *, shallow: int = 20,
 def vlm_scores_adaptive(query_vi: str, image_paths, base_scores, *,
                         shallow: int = 20, deep: int = 200,
                         threshold: float = 0.12, **kw) -> tuple[np.ndarray, bool]:
-    """Chấm rổ NÔNG; chỉ đào sâu tới `deep` khi rổ nông đáng ngờ.
+    """Chấm rổ nông; chỉ đào sâu tới `deep` khi rổ nông đáng ngờ.
 
-    Trả (điểm của những ảnh đã chấm, có đào sâu hay không). Phần chưa chấm không
-    có trong mảng — bên gọi tự đệm NaN cho đuôi.
+    Trả (điểm của những ảnh đã chấm, có đào sâu hay không); bên gọi tự đệm NaN
+    cho đuôi. Đào sâu cho MỌI query là lỗ, nên phải có cò — và cò tính từ điểm
+    truy xuất nên chạy trước khi tiêu lần gọi API nào.
 
-    VÌ SAO PHẢI CHỌN LỌC — đo trên mẫu 30 query (13 khó + 17 dễ) với rổ 200:
-        nhóm KHÓ (đáp án ngoài top-20)    0.2000 -> 0.2545  (+0.055, kéo lên được)
-        nhóm DỄ  (đáp án đã trong top-20) 0.8800 -> 0.8600  (−0.020, bị phá)
-    Ngoại suy ra 81 query (13 khó, 68 dễ): lời +0.009, lỗ −0.017 ⇒ **tổng ≈ −0.008**.
-    Đào sâu cho MỌI query là LỖ — rổ càng sâu càng nhiều cơ hội để VLM đẩy nhầm
-    ảnh sai lên đỉnh (thấy thật: a22 tụt hạng 30 → 173).
-
-    Cò quyết định (`basket_uncertain`) tính từ ĐIỂM TRUY XUẤT nên chạy TRƯỚC khi
-    tiêu bất kỳ lần gọi API nào — query bình thường vẫn chỉ tốn 1 lần gọi.
+    Mặc định TẮT ở giao diện: đào sâu chỉ lợi cho người tự tìm, hại cho danh sách
+    nộp xếp tự động.
     """
     paths = list(image_paths)
     shallow = min(shallow, len(paths))
@@ -395,17 +327,10 @@ def all_failed(scores) -> bool:
 def encoder_scores(query_en: str, image_paths, *, model_name: str = "ViT-B-16-SigLIP2-384",
                    pretrained: str = "webli", batch: int = 32,
                    _cache: dict | None = None) -> np.ndarray:
-    """Chấm lại rổ bằng một encoder KHÁC với encoder đang dùng để tìm kiếm.
+    """Chấm lại rổ bằng một encoder khác encoder tìm kiếm.
 
-    ⚠️ LỊCH SỬ — đọc kỹ trước khi dùng: hàm này sinh ra hồi hệ thống còn chạy
-    vector ViT-B-32 của BTC (FINAL 0.4765), lúc đó chấm lại rổ bằng B-16 ăn
-    +0.042. Từ 2026-08-09 hệ thống đã chuyển hẳn sang ViT-L-16-SigLIP2-384
-    (FINAL 0.7802), nên "chấm lại bằng B-16/openai" KHÔNG còn ý nghĩa — nó yếu
-    hơn hẳn thứ đang dùng. Mặc định vì thế đổi sang B-16-SigLIP2.
-
-    ⚠️ CHẬM trên CPU (~2 ảnh/s → rổ 100 mất ~50 giây) và SigLIP2-384 còn chậm
-    hơn nữa vì ảnh vào 384px. Đã có sẵn vector của cả corpus cho nhiều model
-    trong data/kernel_out/ — dùng encoder_scores_precomputed() thì tức thì.
+    ⚠️ Chậm trên CPU (~2 ảnh/s, rổ 100 mất ~50 giây). Vector cả corpus đã có sẵn
+    trong data/kernel_out/ — dùng `encoder_scores_precomputed()` thì tức thì.
     """
     import open_clip
     import torch
