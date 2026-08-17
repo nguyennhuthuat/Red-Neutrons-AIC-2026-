@@ -1,15 +1,18 @@
 # RED-NEUTRONS AIC retrieval UI
 
-## Retrieval backends
+TRAKE Implementation
 
-The UI supports the existing CLIP index and an optional BLIP retrieval index.
-The two models use different embedding spaces, so their vectors and FAISS
-indexes are not interchangeable.
+## HOW TO USE 
 
-Build the existing CLIP artifacts first:
+Artifacts - features npy file, metadata, faiss index - Lấy từ SigLIP2 của Thắng
 
+### Set configure cho GEMINI
+
+Set API KEY trong PowerShell
 ```powershell
-python src/prepare_data.py
+$env:GEMINI_API_KEY="YOUR_GEMINI_API_KEY"
+$env:GEMINI_TRAKE_MODEL="YOUR_GEMINI_MODEL"
+$env:TRAKE_TIMEOUT_SECONDS="15"
 ```
 ## TRAKE temporal action retrieval
 
@@ -20,7 +23,7 @@ ordered sequence of moments from one video:
 streamlit run ui/enriched_search_ui.py
 ```
 
-Gemini isolates the overall activity and produces an ordered linked list of
+**Gemini** isolates the overall activity and produces an ordered linked list of
 visible actions. The overall activity retrieves candidate videos; TRAKE then
 scores every action against each candidate's full keyframe timeline and returns
 up to three monotonic hypotheses for the top 20 videos.
