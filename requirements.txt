@@ -3,12 +3,16 @@ faiss-cpu>=1.7.4
 open_clip_torch>=2.24.0
 torch>=2.0.0
 Pillow>=10.0.0
+transformers>=4.42.0
+accelerate>=0.30.0
+sentencepiece>=0.2.0
+safetensors>=0.4.3
 
 streamlit>=1.30.0
 
 opencv-python>=4.8.0
 
-google-generativeai>=0.4.0
+google-genai>=1.11.0
 openai>=1.12.0
 
 python-dotenv>=1.0.0
@@ -16,7 +20,3 @@ requests>=2.31.0
 tqdm>=4.66.0
 
 pandas>=2.0.0
-
-yt-dlp>=2026.7.4
-
-kaggle>=2.2.3
