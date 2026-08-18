@@ -30,7 +30,7 @@ q28,"Bốn thanh niên bị che mặt đứng cạnh mấy chiếc xe máy, hai 
 q29,"Một tay đua đạp đơn độc trên đường nhựa, khán giả đứng xem dọc hai bên",Tay đua mặc áo đấu màu gì?,màu vàng,nhìn,L23_V019,24,2828,1275,4236,a13,24
 q30,Cận cảnh đầu lân màu trắng viền đen và vàng đang biểu diễn trước phông nền tím hồng,Phía trước đầu lân có mấy quả cầu đỏ?,hai quả,nhìn,L24_V016,38,3472,2272,4491,a15,25
 q31,"Thầy giáo mặc áo sơ mi kẻ ngồi bên laptop giảng bài, bên cạnh là sơ đồ phả hệ di truyền chiếu trên màn hình","Theo bảng tên hiện dưới màn hình, thầy giáo này dạy ở trường nào?",Trường THPT chuyên Lê Hồng Phong,đọc chữ,L25_V047,166,14700,12900,15600,a21,19
-q32,"Bàn tay cầm chảo rưới sốt chua ngọt màu cam lên đĩa sứ xanh lá đậm, bên cạnh là một chén nước sốt nhỏ",Trên đĩa có mấy quả cà chua bi?,ba quả,nhìn,L26_V412,143,6144,6039,6151,a25,3
+q32,"Bàn tay cầm chảo rưới sốt chua ngọt màu cam lên đĩa sứ xanh lá đậm, bên cạnh là một chén nước sốt nhỏ",Trên đĩa có mấy miếng cà chua bi?,bốn miếng,nhìn,L26_V412,143,6144,6039,6151,a25,3
 q33,Người phụ nữ đội nón lá mặc áo bà ba hoa văn sặc sỡ đang hái lá trong vườn,Khu vườn phía sau được che chắn bằng gì?,lưới che,nhìn,L27_V012,108,4277,4045,4348,a29,8
 q34,"Nhìn từ mũi thuyền gỗ ra khúc sông rộng, bên trái là dãy nhà ven sông",Ở phía xa cuối khúc sông có công trình gì bắc ngang?,một cây cầu bê tông,nhìn,L28_V024,216,12150,12150,12285,a34,2
 q35,Sân phơi rộng lớn với hàng trăm vỉ tre xếp thành hàng dài dưới nắng,Trên các vỉ tre đang phơi thứ gì?,cá khô,nhìn,L29_V019,116,1335,1323,1350,a36,20
@@ -38,7 +38,7 @@ q36,"Hai người phụ nữ khiêng thùng hàng cứu trợ trên vỉa hè, m
 q37,"Người phụ nữ đeo găng tay cao su hồng ngồi bên quầy ven đường, trước mặt chất một đống hoa dài",Loại hoa chất trước mặt người phụ nữ là hoa gì?,bông súng,nhìn,L21_V025,56,5880,5880,6282,a06,7
 q38,"Người đàn ông tóc bạc đeo kính gọng đen mặc vest xám đứng sau bục gỗ phát biểu, phía sau là các lá cờ và huy hiệu tròn",Dòng chữ tiếng Anh vòng quanh huy hiệu trên phông nền là gì?,BOARD OF GOVERNORS,đọc chữ,L21_V001,193,23235,23163,23498,a42,5
 q39,Thầy giáo mặc áo sơ mi đen đứng bên slide bài giảng Ngữ văn có hình vẽ cây và sách,"Theo bảng tên dưới màn hình, thầy giáo này dạy ở trường nào?","Trường THPT Bùi Thị Xuân, TPHCM",đọc chữ,L25_V054,300,32100,31599,33900,a22,17
-q40,"Cột mốc biên giới bằng đá granite khắc chữ đỏ, bên cạnh là lá cờ đỏ sao vàng bay trong gió",Cột mốc này mang số hiệu bao nhiêu?,246 (1),đọc chữ,L28_V001,233,13635,13635,13635,a66,1
+q40,"Cột mốc biên giới bằng đá granite khắc chữ đỏ, bên cạnh là lá cờ đỏ sao vàng bay trong gió",Cột mốc khắc những dòng chữ đỏ nào?,"VIỆT NAM, 246 (1), 2011",đọc chữ,L28_V001,233,13635,13635,13635,a66,1
 q41,Máy bay cánh quạt nhỏ màu trắng sọc đỏ đậu trên sân bê tông trước một toà nhà thấp,Số hiệu đăng ký sơn trên thân máy bay là gì?,N182WT,đọc chữ,L22_V007,128,12840,12570,13310,a45,7
 q42,"Tượng đồng một người đàn ông giơ tay chào đứng trước bức phù điêu đá lớn, hai bên có cờ đỏ sao vàng",Luống hoa trồng phía trước tượng đài có màu gì?,màu hồng,nhìn,L23_V002,74,8675,8055,8675,a48,5
 q43,Con lân vàng cam biểu diễn trên cọc sắt ngoài trời ban ngày,Vật trang trí lớn ở bên trái khung hình có những màu gì?,đỏ và xanh dương,nhìn,L24_V026,43,3224,2356,4340,a17,25
