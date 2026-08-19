@@ -1,5 +1,7 @@
 
 from pathlib import Path
+import csv
+import io
 import json
 import os
 import sys
@@ -16,6 +18,7 @@ os.environ.setdefault("VLM_CHO_429", "0")
 import corpus  # noqa: E402  (nạp metadata + sửa đường dẫn ảnh cho đúng máy)
 import ensemble  # noqa: E402  (encoder phụ, cộng điểm trên toàn corpus)
 import rerank  # noqa: E402  (tầng re-rank, xem src/rerank.py)
+import nopbai  # noqa: E402  (đóng gói .zip đúng cấu trúc thể lệ)
 
 DATASET = "hcmc2026"
 PROCESSED = ROOT / "data" / f"processed_{DATASET}"
@@ -169,6 +172,39 @@ def load_features():
 @st.cache_resource(show_spinner="Nạp vector vào RAM cho ensemble ...")
 def load_features_ram():
     return np.load(PROCESSED / "features.npy")
+
+
+def kho() -> dict:
+    """Kho bài nộp: {tên file .csv -> danh sách dòng}. Sống suốt phiên."""
+    return st.session_state.setdefault("kho", {})
+
+
+def luu_kho(ten: str, dong: list) -> str:
+    ten = ten.strip()
+    ten = ten if ten.endswith(".csv") else f"{ten}.csv"
+    kho()[ten] = dong
+    return ten
+
+
+def o_luu(ten_mac_dinh: str, khoa: str, dung_dong):
+    """Ô nhập tên file + nút lưu, dùng chung cho cả ba tab."""
+    with st.container(border=True):
+        c1, c2 = st.columns([2, 1])
+        ten = c1.text_input(
+            "Tên file nộp", ten_mac_dinh, key=f"ten_{khoa}",
+            help="Lấy ĐÚNG tên file truy vấn BTC phát, chỉ đổi .txt thành .csv. "
+                 "Quy ước: query-<số>-<kis|qa|trake>.csv")
+        c2.markdown("<div style='height:1.8rem'></div>", unsafe_allow_html=True)
+        if c2.button("💾 Lưu vào kho", key=f"luu_{khoa}", type="primary",
+                     width="stretch"):
+            try:
+                dong = dung_dong()
+            except ValueError as exc:
+                st.error(str(exc))
+                return
+            t = luu_kho(ten, dong)
+            st.toast(f"{t}: đã lưu {len(dong)} dòng")
+            st.rerun()
 
 
 def search_by_image(row_id: int, top_k: int, same_video_only: bool) -> pd.DataFrame:
@@ -412,7 +448,32 @@ with st.sidebar:
                 help="FINAL: tắt 0.7901 · 0.2→0.8049 · 0.5→0.8148 · 0.7→0.8074 "
                      "· 1.0→0.8025.")
 
-tab_kis, tab_qa, tab_trake = st.tabs(["KIS", "Q&A", "TRAKE"])
+    st.divider()
+    st.subheader(f"📦 Kho bài nộp ({len(kho())})")
+    if not kho():
+        st.caption("Trống. Tìm xong ở mỗi tab thì bấm **Lưu vào kho** — mỗi câu "
+                   "truy vấn một file .csv, tối đa 100 dòng.")
+    else:
+        hong = []
+        for ten in sorted(kho()):
+            dong = kho()[ten]
+            loi = nopbai.kiem_tep(ten, dong)
+            if loi:
+                hong.append(ten)
+            st.markdown(f"{'🔴' if loi else '✅'} `{ten}` · **{len(dong)}** dòng")
+        if hong:
+            st.error(f"{len(hong)} file còn lỗi — mở tab **📦 Nộp bài** để soi và "
+                     f"sửa. Nộp sai định dạng VẪN trừ một lượt trong ba lượt.")
+        else:
+            st.download_button(
+                "📦 Tải submission.zip", nopbai.dong_goi(dict(kho())),
+                file_name="submission.zip", mime="application/zip",
+                type="primary", width="stretch",
+                help="Đã có sẵn thư mục submission/ bên trong đúng như thể lệ. "
+                     "Nộp thẳng file này lên hệ thống BTC.")
+
+tab_kis, tab_qa, tab_trake, tab_nop = st.tabs(
+    ["KIS", "Q&A", "TRAKE", "📦 Nộp bài"])
 
 
 with tab_kis:
@@ -540,6 +601,12 @@ with tab_kis:
         st.caption(f"{len(nop)} ứng viên · mã nộp nằm ngay dưới mỗi ảnh, "
                    f"bấm vào là chép được")
 
+        # Nộp cả 100 dòng, không phải một. R@1 chỉ 0,481 còn R@100 là 0,951, mà
+        # thể lệ không phạt dòng sai — dòng 2-100 là bảo hiểm miễn phí.
+        o_luu("query-1-kis", "kis",
+              lambda: [nopbai.dong_kis(r.video_id, r.frame_idx)
+                       for r in nop.itertuples()])
+
         if video_mode:
             show_videos(hits, cols_per_row)
         else:
@@ -588,6 +655,7 @@ with tab_qa:
     if st.session_state.get("qa_desc_truoc") != qa_desc:
         st.session_state["qa_desc_truoc"] = qa_desc
         st.session_state["qa_da_tim"] = False
+        st.session_state.pop("qa_got", None)      # đáp án cũ thuộc rổ cũ
 
     if st.session_state.get("qa_da_tim"):
         if not qa_desc.strip():
@@ -599,12 +667,13 @@ with tab_qa:
             hits = search(qa_desc.strip(), max(qa_top, 100), ens_w=ens_w,
                           mark_rows=qa_marked,
                           thuong_video=3.0 if qa_uu_tien else 0.3)
-            got = None
             if tra_loi:
                 with st.spinner("Đang hỏi VLM ..."):
-                    got = qamod.answer_over_hits(qa_ques.strip(), hits,
-                                                 desc=qa_desc.strip(), top=qa_top)
-            if not tra_loi:
+                    st.session_state["qa_got"] = qamod.answer_over_hits(
+                        qa_ques.strip(), hits, desc=qa_desc.strip(), top=qa_top)
+            # Giữ đáp án qua các lần chạy lại: mỗi lần hỏi lại là một lời gọi API.
+            got = st.session_state.get("qa_got")
+            if got is None and not tra_loi:
                 st.info(f"Rổ đã dựng, chưa tốn lời gọi API nào. **Tích OK ở khung "
                         f"đúng cảnh** rồi mới bấm bước 2 — khung đáp án phải nằm "
                         f"trong {qa_top} ảnh đầu, nếu không thì VLM không có gì "
@@ -628,6 +697,12 @@ with tab_qa:
                             f"{got['vlm_frame_idx']}, khác khung đang nộp "
                             f"({got['video_id']} frame {got['frame_idx']}). "
                             "Hai chỗ lệch nhau là dấu hiệu nên soi lại bằng mắt.")
+
+                # Cả 100 dòng dùng CHUNG câu trả lời: quy chế chấm đáp án của
+                # dòng trúng, nên đáp án sai là 0 dù khung đúng.
+                o_luu("query-2-qa", "qa",
+                      lambda: [nopbai.dong_qa(*r) for r in
+                               qamod.submission_rows(hits, got, limit=100)])
                 st.divider()
             st.caption(f"{qa_top} ứng viên đầu — ảnh đầu tiên là khung sẽ nộp")
             show_frames(hits.iloc[:qa_top], cols_per_row, similar=False)
@@ -707,31 +782,114 @@ with tab_trake:
         st.caption(f"{len(texts)} mốc × ~13 giây mã hoá ≈ **{len(texts) * 13} giây** "
                    f"(38 lần mã hoá mỗi mốc, bán kính dò ±60 frame).")
         if st.button("Căn chuỗi", key="tk_go", type="primary"):
-            moments = None
             try:
                 with st.spinner(f"Đang căn {len(texts)} mốc trên {tk_video} ..."):
-                    moments = tkmod.locate_sequence(tk_video, texts)
+                    # Giữ lại qua các lần chạy lại: căn một chuỗi tốn hàng chục giây.
+                    st.session_state["tk_kq"] = tkmod.locate_sequence(tk_video, texts)
+                    st.session_state["tk_kq_video"] = tk_video
             except FileNotFoundError as exc:
                 st.error(str(exc))
-            if moments:
-                ids = [m["frame_idx"] for m in moments]
-                got_ids, imgs = tkmod.read_frames(tk_video, ids)
-                pic = dict(zip(got_ids, imgs))
-                dong_tk = tkmod.submission_row(tk_video, moments)
-                st.code(", ".join(str(x) for x in dong_tk), language=None)
-                if ids != sorted(ids):
-                    st.warning("⚠️ Kết quả KHÔNG tăng dần theo thời gian — hai mốc sát "
-                               "nhau có thể đã trùng vùng. Soi lại bằng mắt trước khi nộp.")
-                for start in range(0, len(moments), cols_per_row):
-                    cols = st.columns(cols_per_row)
-                    for j, (col, m) in enumerate(
-                            zip(cols, moments[start:start + cols_per_row]), start):
-                        with col:
-                            im = pic.get(m["frame_idx"])
-                            if im is not None:
-                                st.image(im, width="stretch")
-                            st.caption(f"frame **{m['frame_idx']}** · điểm {m['score']:.3f}"
-                                       f"\n\nneo {m['anchor']} "
-                                       f"({m['frame_idx'] - m['anchor']:+d})"
-                                       f"\n\n_{goc[j]}_")
-                st.caption("Điểm thấp = có thể căn sai; soi kỹ mốc đó trước khi nộp.")
+        moments = st.session_state.get("tk_kq")
+        if moments and st.session_state.get("tk_kq_video") != tk_video:
+            st.info(f"Kết quả dưới đây căn trên **{st.session_state['tk_kq_video']}**, "
+                    f"không phải video đang chọn. Bấm **Căn chuỗi** để căn lại.")
+        if moments:
+            tk_video = st.session_state["tk_kq_video"]
+            ids = [m["frame_idx"] for m in moments]
+            got_ids, imgs = tkmod.read_frames(tk_video, ids)
+            pic = dict(zip(got_ids, imgs))
+            dong_tk = tkmod.submission_row(tk_video, moments)
+            st.code(", ".join(str(x) for x in dong_tk), language=None)
+            if ids != sorted(ids):
+                st.warning("⚠️ Kết quả KHÔNG tăng dần theo thời gian — hai mốc sát "
+                           "nhau có thể đã trùng vùng. Soi lại bằng mắt trước khi nộp.")
+            for start in range(0, len(moments), cols_per_row):
+                cols = st.columns(cols_per_row)
+                for j, (col, m) in enumerate(
+                        zip(cols, moments[start:start + cols_per_row]), start):
+                    with col:
+                        im = pic.get(m["frame_idx"])
+                        if im is not None:
+                            st.image(im, width="stretch")
+                        st.caption(f"frame **{m['frame_idx']}** · điểm {m['score']:.3f}"
+                                   f"\n\nneo {m['anchor']} "
+                                   f"({m['frame_idx'] - m['anchor']:+d})"
+                                   f"\n\n_{goc[j]}_")
+            st.caption("Điểm thấp = có thể căn sai; soi kỹ mốc đó trước khi nộp.")
+
+            # Thể lệ cho tối đa 100 dòng cho CẢ TRAKE, nhưng chưa rõ cách chấm
+            # nhiều dòng nên tạm nộp đúng một chuỗi.
+            o_luu("query-3-trake", "trake",
+                  lambda: [nopbai.dong_trake(dong_tk[0], dong_tk[1:])])
+
+
+# ═════════════════════════════ NỘP BÀI ═════════════════════════════
+with tab_nop:
+    st.caption(
+        "Soi lại **đúng thứ sẽ nộp** trước khi tải về. Mỗi gói chỉ được nộp "
+        "**3 lần** và **lần cuối cùng** mới được tính điểm — nộp sai định dạng "
+        "vẫn trừ một lượt, nên chỗ này đáng nhìn kỹ.")
+
+    if not kho():
+        st.info("Kho đang trống. Tìm ở tab KIS / Q&A / TRAKE rồi bấm "
+                "**💾 Lưu vào kho**.")
+    else:
+        chon = st.selectbox("File đang soi", sorted(kho()), key="nop_chon")
+        dong = kho()[chon]
+        loi = nopbai.kiem_tep(chon, dong)
+
+        if loi:
+            st.error("**Còn lỗi, chưa nộp được:**\n"
+                     + "\n".join(f"- {e}" for e in loi))
+        else:
+            st.success(f"`{chon}` · {len(dong)}/100 dòng · đúng định dạng thể lệ")
+
+        h1, h2, h3 = st.columns([2, 1, 1])
+        ten_moi = h1.text_input(
+            "Đổi tên file", chon, key=f"ten_moi_{chon}",
+            help="Phải trùng tên file truy vấn BTC phát, chỉ đổi .txt thành .csv.")
+        h2.markdown("<div style='height:1.8rem'></div>", unsafe_allow_html=True)
+        if h2.button("Đổi tên", width="stretch") and ten_moi.strip() != chon:
+            kho().pop(chon)
+            luu_kho(ten_moi, dong)
+            st.rerun()
+        h3.markdown("<div style='height:1.8rem'></div>", unsafe_allow_html=True)
+        if h3.button("🗑 Xoá file", width="stretch"):
+            kho().pop(chon)
+            st.rerun()
+
+        c1, c2 = st.columns(2)
+
+        with c1:
+            st.markdown("##### ✏️ Sửa trực tiếp")
+            st.caption("Mỗi dòng một bản ghi. Đây là **văn bản thật** sẽ nằm "
+                       "trong .csv — sửa xong nhớ bấm Áp dụng.")
+            moi = st.text_area(
+                "nội dung", "\n".join(dong), height=430,
+                key=f"sua_{chon}", label_visibility="collapsed")
+            a1, a2 = st.columns(2)
+            if a1.button("✅ Áp dụng sửa", type="primary", width="stretch"):
+                kho()[chon] = [x for x in moi.split("\n") if x.strip()]
+                st.rerun()
+            a2.download_button("⬇ Tải .csv này", nopbai.mot_tep(dong),
+                               file_name=chon, mime="text/csv", width="stretch")
+
+        with c2:
+            st.markdown("##### 👁 Máy chấm sẽ đọc ra thế này")
+            st.caption("Tách trường bằng chính `csv.reader`, không phải bằng mắt. "
+                       "Cột lệch hoặc ô trống là dấu hiệu ngoặc kép sai.")
+            bang = [next(csv.reader(io.StringIO(x)), []) for x in dong]
+            rong = max((len(r) for r in bang), default=0)
+            bang = [r + [""] * (rong - len(r)) for r in bang]
+            dang = nopbai.dang_cua(chon)
+            if dang == "kis" and rong == 2:
+                cot = ["video_id", "frame_idx"]
+            elif dang == "qa" and rong == 3:
+                cot = ["video_id", "frame_idx", "answer"]
+            elif dang == "trake" and rong >= 2:
+                cot = ["video_id"] + [f"mốc {i}" for i in range(1, rong)]
+            else:
+                cot = [f"trường {i + 1}" for i in range(rong)]
+            xem = pd.DataFrame(bang, columns=cot)
+            xem.index = range(1, len(xem) + 1)
+            st.dataframe(xem, height=430, width="stretch")
