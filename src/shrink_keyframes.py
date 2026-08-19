@@ -1,36 +1,3 @@
-"""
-shrink_keyframes.py — thu nhỏ 177k keyframe rồi đóng gói để upload lên Kaggle.
-
-VÌ SAO PHẢI THU NHỎ
-    Bộ keyframe gốc nặng 28,66 GB (177.321 ảnh, trung bình 170 KB). Upload chừng
-    đó lên Kaggle là tự chuốc lấy đứt kết nối — lần upload 8,39 GB audio đã dính
-    SSLEOFError giữa chừng. Mà CLIP dù sao cũng resize ảnh về 224px trước khi
-    nhìn, nên phần lớn 28 GB kia bị vứt đi ngay ở bước tiền xử lý.
-
-ĐÃ ĐO CHỨ KHÔNG ĐOÁN (script scratchpad/shrink_metric.py, 81 query, rổ top-100)
-    B-16 từ ảnh GỐC                FINAL 0.5111
-    B-16 từ ảnh THU NHỎ 384px q92  FINAL 0.5111   ← giống hệt
-    cosine giữa hai bộ vector: 0.9957
-
-    Bài học: cosine 0.9957 nghe như mất mát đáng kể nhưng ĐIỂM KHÔNG ĐỔI. Cosine
-    là chỉ số sai để quyết định việc này — phải đo thẳng cái mình cần.
-
-VÌ SAO 384px CHỨ KHÔNG PHẢI 224px
-    Thử cả hai. Làm sẵn đúng phép tiền xử lý của CLIP (224px + cắt giữa) lại cho
-    cosine TỆ HƠN (0.9885) so với giữ 384px (0.9964). Lý do: nén JPEG ở đúng độ
-    phân giải model nhìn thì vết nén khối 8x8 nằm nguyên trong ảnh; còn giữ 384px
-    thì bước thu nhỏ về 224 tự bình quân hoá vết nén đi. **Nén rồi mới thu nhỏ
-    luôn tốt hơn thu nhỏ rồi mới nén.**
-    Ngoài ra 384px giữ cửa mở cho SigLIP-384 và ViT-L-14-336.
-
-VÌ SAO BICUBIC
-    Đó là bộ lọc CLIP dùng (Resize(size=224, interpolation=bicubic)). Dùng LANCZOS
-    thì thành hai bộ lọc khác nhau chồng lên nhau.
-
-Chạy:
-    python src/shrink_keyframes.py            # xem trước, không ghi gì
-    python src/shrink_keyframes.py --apply    # thu nhỏ + đóng gói
-"""
 
 import argparse
 import io
@@ -58,15 +25,11 @@ def shrink_bytes(path: Path) -> bytes:
     if s < 1:
         im = im.resize((round(w * s), round(h * s)), Image.BICUBIC)
     buf = io.BytesIO()
-    # subsampling=0 = không lấy mẫu con kênh màu. Giữ màu sắc nguyên vẹn, mà
-    # màu là chi tiết query hay nhắc tới nhất ("áo đỏ", "bảng xanh").
     im.save(buf, format="JPEG", quality=QUALITY, optimize=True, subsampling=0)
     return buf.getvalue()
 
 
 def find_videos() -> dict[str, Path]:
-    """video_id -> thư mục ảnh. L26 bị BTC chia thành Keyframes_L26_a..e nên
-    không thể duyệt theo tên gói; khớp theo '_V' trong tên thư mục con."""
     out = {}
     for pack in sorted(RAW.glob("Keyframes_*")):
         for d in pack.rglob("*"):
@@ -94,13 +57,6 @@ def do_video(args):
 
 
 def make_zips(src_root: Path, n_zip: int):
-    """Đóng gói CÂN BẰNG theo dung lượng, dùng ZIP_STORED (không nén lại).
-
-    Hai điều đã học ở đợt upload audio:
-      - `kaggle datasets create --dir-mode zip` CHỈ nén thư mục con, file lẻ vẫn
-        upload từng cái một -> 177k lần gọi API, chắc chắn đứt. Phải tự nén.
-      - JPEG đã nén rồi, nén lại bằng deflate chỉ tốn CPU mà không giảm được gì.
-    """
     vids = sorted(d for d in src_root.iterdir() if d.is_dir())
     sizes = [(d, sum(f.stat().st_size for f in d.glob("*.jpg"))) for d in vids]
     sizes.sort(key=lambda x: -x[1])
@@ -114,10 +70,6 @@ def make_zips(src_root: Path, n_zip: int):
 
     for i, (bucket, load) in enumerate(zip(buckets, loads), 1):
         zp = src_root / f"keyframes_{i:02d}.zip"
-        # Ghi ra .part rồi mới đổi tên. Nếu bỏ bước này thì lần chạy bị ngắt
-        # giữa chừng để lại một file .zip cụt, và vòng lặp "đã có thì bỏ qua"
-        # bên dưới sẽ coi nó là xong -> upload archive hỏng lên Kaggle mà không
-        # có lấy một dòng cảnh báo. ĐÃ DÍNH THẬT một lần.
         if zp.exists():
             print(f"  {zp.name} đã có, bỏ qua")
             continue
@@ -129,8 +81,6 @@ def make_zips(src_root: Path, n_zip: int):
         tmp.replace(zp)
         print(f"  {zp.name}: {len(bucket)} video · {load/1024**3:.2f} GB", flush=True)
 
-    # Kiểm tra cuối: mở lại từng gói và đếm. Upload xong mới phát hiện hỏng thì
-    # mất cả tiếng đồng hồ đường truyền.
     print("\nkiểm tra lại các gói ...")
     total = 0
     for zp in sorted(src_root.glob("*.zip")):
@@ -146,18 +96,6 @@ def make_zips(src_root: Path, n_zip: int):
 
 
 def make_side_files(dst: Path, n_probe: int = 500):
-    """Gói phụ vài MB: metadata + query + MẪU ĐỐI CHỨNG để kiểm tra căn hàng.
-
-    Dùng khi lấy keyframe từ dataset công khai của người khác (vd nguynnc/aic2025)
-    thay vì tự upload. Lúc đó câu hỏi sống còn là: ảnh của họ có ĐÚNG là ảnh của
-    mình không? Nếu họ trích keyframe theo cách khác thì số thứ tự `n` lệch, và
-    hệ thống sẽ trả về ảnh sai mà mọi thứ trông vẫn bình thường.
-
-    Cách chứng minh: lấy `n_probe` khung ngẫu nhiên kèm vector B-32 do BTC cấp.
-    Trên Kaggle, mã hoá đúng những khung đó bằng ViT-B-32-quickgelu rồi so cosine.
-    Trùng ảnh thì cosine ~0.999 (đã đo mốc này ở [data-hcmc2026]); lệch ảnh thì
-    rơi xuống ~0.2-0.5 ngay lập tức.
-    """
     import numpy as np
     meta = pd.read_parquet(ROOT / "data" / "processed_hcmc2026" / "metadata.parquet")
     feats = np.load(ROOT / "data" / "processed_hcmc2026" / "features.npy", mmap_mode="r")
@@ -232,10 +170,6 @@ if __name__ == "__main__":
     print(f"\nthu nhỏ xong {done:,} ảnh · {tot/1024**3:.2f} GB · {(time.time()-t0)/60:.1f} phút")
     assert done == n_img, f"thiếu ảnh: {done:,} vs {n_img:,}"
 
-    # Kèm ba file nhỏ để notebook trên Kaggle tự lo được mọi thứ:
-    #   metadata.parquet  -> thứ tự hàng chuẩn (sorted video_id, rồi n tăng dần)
-    #   queries_*.csv     -> 81 query, chấm Recall ngay tại chỗ khỏi tải về mới biết
-    #   probe_b32.npz     -> 500 khung đối chứng để kiểm tra căn hàng
     make_side_files(OUT)
 
     print(f"\nđóng {a.zips} gói ...")

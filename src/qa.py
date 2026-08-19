@@ -1,12 +1,3 @@
-"""Dạng truy vấn Q&A: mô tả sự kiện + một câu hỏi.
-
-Nộp `<video_id>, <frame_id>, <answer>`; **sai câu trả lời là 0 điểm dù đúng
-khung**, nên đây là dạng duy nhất mà tìm kiếm giỏi vẫn có thể ăn 0.
-
-Mặc định CLIP chọn khung còn VLM chỉ trả lời — để VLM tự chọn khung thì tệ hơn
-hẳn (14% so với 36%), vì nó chọn ảnh nào nó TRẢ LỜI ĐƯỢC chứ không phải ảnh khớp
-mô tả. Đặt `frame_from="vlm"` để quay lại hành vi cũ. Xem báo cáo, mục "Dạng Q&A".
-"""
 
 from __future__ import annotations
 
@@ -19,6 +10,8 @@ import numpy as np
 
 ROOT = Path(__file__).resolve().parent.parent
 
+QA_PX = int(os.environ.get("QA_PX", 512))
+
 PROMPT = """Bạn đang giúp thí sinh trả lời một câu hỏi về video.
 
 Mô tả sự kiện: "{desc}"
@@ -30,7 +23,8 @@ Nhiệm vụ:
 1. Chọn ảnh trả lời được câu hỏi RÕ NHẤT. Ảnh đúng chủ đề nhưng không nhìn thấy
    thứ được hỏi thì KHÔNG chọn — hãy chọn ảnh thấy rõ chi tiết cần trả lời.
 2. Trả lời câu hỏi, NGẮN GỌN, bằng tiếng Việt. Chỉ nêu thông tin nhìn thấy được
-   trong ảnh. Nếu không ảnh nào trả lời được, để answer là "" và confidence 0.
+   trong ảnh. Nếu là màu sắc, nói rõ "xanh lá" hay "xanh dương", đừng nói trống
+   "xanh". Nếu không ảnh nào trả lời được, để answer là "" và confidence 0.
 3. Cho biết mức chắc chắn 0-10.
 
 CHỈ trả JSON:
@@ -39,12 +33,7 @@ CHỈ trả JSON:
 
 
 def ask(question_vi: str, image_paths, *, desc: str = "", model: str | None = None,
-        px: int | None = None, retries: int = 3, verbose: bool = False) -> dict | None:
-    """Hỏi VLM một câu về rổ ảnh. Trả dict {best_index, answer, confidence, reason}.
-
-    `best_index` là chỉ số 0-based vào `image_paths` (prompt đánh số từ 1 cho
-    người/model dễ đọc, ở đây trừ lại 1 — đừng quên chỗ này).
-    """
+        px: int | None = None, retries: int = 5, verbose: bool = False) -> dict | None:
     from google.genai import types
     import rerank
 
@@ -53,7 +42,7 @@ def ask(question_vi: str, image_paths, *, desc: str = "", model: str | None = No
         raise RuntimeError("Không thấy GEMINI_API_KEY trong .env")
 
     model = model or os.environ.get("GEMINI_MODEL", "gemini-3.5-flash-lite")
-    px = px or rerank.VLM_PX
+    px = px or QA_PX
     paths = list(image_paths)
 
     parts = [types.Part.from_text(text=PROMPT.format(
@@ -61,6 +50,7 @@ def ask(question_vi: str, image_paths, *, desc: str = "", model: str | None = No
     parts += [types.Part.from_bytes(data=rerank._thumb(p, px), mime_type="image/jpeg")
               for p in paths]
 
+    quota_hits = 0
     for attempt in range(retries):
         client = clients.current()
         if client is None:
@@ -74,8 +64,11 @@ def ask(question_vi: str, image_paths, *, desc: str = "", model: str | None = No
             b = int(d.get("best", 0)) - 1                 # 1-based -> 0-based
             if not (0 <= b < len(paths)):
                 raise ValueError(f"best={d.get('best')} ngoài khoảng 1..{len(paths)}")
+            ans = str(d.get("answer", "")).strip()
+            if not ans:
+                raise ValueError("model trả câu trả lời rỗng")
             return {"best_index": b,
-                    "answer": str(d.get("answer", "")).strip(),
+                    "answer": ans,
                     "confidence": float(d.get("confidence", 0)),
                     "reason": str(d.get("reason", "")).strip()}
         except Exception as e:
@@ -83,10 +76,16 @@ def ask(question_vi: str, image_paths, *, desc: str = "", model: str | None = No
                 if clients.retire(verbose=False) is None:
                     break
                 continue
-            if rerank._is_quota_error(e):     # có thể chỉ là chặn theo phút
-                time.sleep(30)
+            if rerank._is_quota_error(e):
+                quota_hits += 1
+                if quota_hits == 1:
+                    print(f"    [API] 429 ở khoá #{clients.i + 1} — chờ 30s rồi "
+                          f"thử LẠI chính khoá này", flush=True)
+                    time.sleep(30)
+                    continue                  # thử lại CÙNG khoá
                 if clients.retire() is None:
                     break
+                quota_hits = 0                # khoá mới, đếm lại từ đầu
                 continue
             print(f"  [API] Q&A lỗi ({attempt + 1}/{retries}): "
                   f"{type(e).__name__} {str(e)[:120]}", flush=True)
@@ -97,11 +96,6 @@ def ask(question_vi: str, image_paths, *, desc: str = "", model: str | None = No
 
 def answer_over_hits(question_vi: str, hits, *, desc: str = "", top: int = 20,
                      frame_from: str = "clip", **kw) -> dict | None:
-    """Chạy `ask` trên `top` kết quả đầu của một DataFrame hits.
-
-    Trả thêm `vlm_frame_idx` bên cạnh khung sẽ nộp: hai cái lệch nhau là dấu
-    hiệu đáng xem lại bằng mắt.
-    """
     sub = hits.iloc[:top]
     got = ask(question_vi, sub["image_path"].tolist(), desc=desc, **kw)
     if got is None:
@@ -119,12 +113,6 @@ def answer_over_hits(question_vi: str, hits, *, desc: str = "", top: int = 20,
 
 
 def submission_rows(hits, chosen: dict | None, *, limit: int = 100) -> list[tuple]:
-    """Dựng danh sách nộp `(video_id, frame_idx, answer)`, tối đa `limit` dòng.
-
-    Luôn nộp đủ 100 dòng: R@k lấy MAX trên k kết quả đầu nên thêm dòng không bao
-    giờ làm mất điểm đã có. Khung VLM chọn được đẩy lên đầu, phần còn lại giữ
-    thứ tự tìm kiếm và dùng chung câu trả lời.
-    """
     ans = (chosen or {}).get("answer", "")
     rows, seen = [], set()
     if chosen:

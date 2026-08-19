@@ -1,14 +1,3 @@
-"""
-Input  (raw, downloaded from Kaggle):
-    - map-keyframes CSVs   : one per video, columns [n, pts_time, fps, frame_idx]
-    - CLIP feature .npy    : one per video, shape [num_keyframes, dim]
-    - keyframe images      : jpg/png per keyframe (optional, for UI display)
-
-Output (data/processed/):
-    - metadata.parquet : one row per keyframe, global row order == FAISS row order
-    - features.npy     : float32 [total_keyframes, dim], L2-normalized
-    - faiss.index      : IndexFlatIP built on features.npy
-"""
 
 import os
 import sys
@@ -44,25 +33,9 @@ DATASETS = {
 }
 
 """ Download dataset 2023"""
-# def download_dataset_if_missing(target_dir: Path, slug: str):
-#     """Download from Kaggle only if the target dir is missing or empty."""
-#     if target_dir.exists() and any(target_dir.iterdir()):
-#         print(f"[download] Dataset already present at {target_dir}, skipping.")
-#         return
-#     target_dir.mkdir(parents=True, exist_ok=True)
-#     cmd = f"kaggle datasets download -d {slug} -p {target_dir} --unzip"
-#     print(f"[download] Running: {cmd}")
-#     code = os.system(cmd)
-#     if code != 0:
-#         sys.exit("[download] Kaggle download failed. Check credentials / slug.")
 
 
 def find_map_keyframe_csvs(root: Path) -> dict[str, Path]:
-    """Return {video_id: csv_path} for all map-keyframes CSVs.
-
-    Video ids look like 'L01_V001'. We match any CSV whose parent path
-    mentions 'map' + 'keyframe' to avoid picking up unrelated CSVs.
-    """
     result = {}
     for csv in root.rglob("*.csv"):
         parts_lower = str(csv).lower()
@@ -82,11 +55,6 @@ def find_feature_files(root: Path) -> dict[str, Path]:
 
 
 def find_keyframe_dirs(root: Path) -> dict[str, Path]:
-    """Return {video_id: directory} containing keyframe images.
-
-    We look for directories whose name matches a video id pattern and
-    which directly contain image files.
-    """
     result = {}
     for d in root.rglob("*"):
         if d.is_dir() and "_V" in d.name:
@@ -99,11 +67,6 @@ def find_keyframe_dirs(root: Path) -> dict[str, Path]:
 
 
 def keyframe_image_path(kf_dir: Path | None, n: int) -> str:
-    """Resolve the image path for keyframe number `n` (1-based in CSVs).
-
-    Filenames in the dataset are zero-padded, e.g. 001.jpg / 0001.jpg.
-    Returns "" if not resolvable — UI must handle missing images.
-    """
     if kf_dir is None:
         return ""
     for pad in (3, 4, 5):
@@ -112,7 +75,6 @@ def keyframe_image_path(kf_dir: Path | None, n: int) -> str:
             if p.exists():
                 return str(p)
     return ""
-
 
 
 def build_artifacts(cfg: dict):
@@ -176,9 +138,6 @@ def build_artifacts(cfg: dict):
 
     metadata = pd.concat(meta_frames, ignore_index=True)
 
-    # Ép các cột số về numeric — 1 số CSV có ô rỗng (vd L01_V001 n=3 có
-    # frame_idx = ' ') khiến pandas hiểu cả cột thành string, làm pyarrow
-    # ghi parquet bị lỗi ArrowTypeError.
     for col in ["n", "pts_time", "fps", "frame_idx"]:
         metadata[col] = pd.to_numeric(metadata[col], errors="coerce")
 
@@ -236,6 +195,4 @@ if __name__ == "__main__":
     cfg = DATASETS[args.dataset]
     print(f"[main] Dataset: {args.dataset} -> {cfg['processed']}")
 
-    # if cfg["kaggle_slug"]: 
-    #     download_dataset_if_missing(cfg["raw"], cfg["kaggle_slug"])
     build_artifacts(cfg)

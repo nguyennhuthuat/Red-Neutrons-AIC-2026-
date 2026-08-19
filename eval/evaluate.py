@@ -1,16 +1,3 @@
-"""Đo chất lượng truy xuất trên bộ query tự annotate.
-
-    python eval/evaluate.py --ensemble 0.5 --rerank vlm --rerank-depth 20
-
-Mốc {1,5,20,50,100} và Final Score theo quy chế AIC 2026: R-Score của KIS là nhị
-phân nên R@k đúng bằng Recall@k.
-
-Mốc hiện hành và cơ sở đo của từng cờ: docs/bao_cao_he_thong.tex.
-Nền một mình 0.7901 · + ensemble 0.8148 · + VLM rổ 20 **0.8198**.
-
-Lưu ý khi đọc kết quả: chấm lại trên rổ top-D không bao giờ đổi R@100 — thấy đổi
-là có bug. Chỉ `--ensemble` mới đụng được R@100 vì nó chấm toàn corpus.
-"""
 
 import os
 import sys
@@ -21,9 +8,9 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-import faiss
 import torch
 import open_clip
+
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
@@ -49,10 +36,6 @@ def encode_batch(texts, model, tokenizer) -> np.ndarray:
     return vecs.astype(np.float32)
 
 
-# --------------------------------------------------------------------------
-# Dịch query Việt -> Anh. Mỗi backend nhận list câu, trả list câu cùng độ dài.
-# --------------------------------------------------------------------------
-
 HF_MODELS = {
     "vinai": "vinai/vinai-translate-vi2en-v2",     # mBART ~2.4GB, tốt nhất
     "envit5": "VietAI/envit5-translation",         # T5 ~1.2GB, cần tiền tố "vi: "
@@ -61,9 +44,6 @@ HF_MODELS = {
 
 
 def tr_google(texts: list[str]) -> list[str | None]:
-    """Google Translate không cần API key. Dùng chung `src/translate.py` với UI
-    để hai nơi không lệch nhau. Trả None ở câu hỏng — None không được cache.
-    """
     import translate as tr
     return tr.to_english_batch(texts)
 
@@ -86,8 +66,6 @@ def tr_hf(texts: list[str], backend: str) -> list[str]:
 
     gen = {"num_beams": 5, "max_length": 128, "early_stopping": True}
     if backend == "vinai":
-        # mBART cần biết ngôn ngữ ĐÍCH qua token bắt đầu của decoder.
-        # transformers mới bỏ lang_code_to_id nên phải có đường lùi.
         gen["decoder_start_token_id"] = (
             tok.lang_code_to_id["en_XX"] if hasattr(tok, "lang_code_to_id")
             else tok.convert_tokens_to_ids("en_XX"))
@@ -149,11 +127,6 @@ def tr_gemini(texts: list[str]) -> list[str | None]:
 
 
 def translate(texts: list[str], backend: str) -> tuple[list[str], float]:
-    """Trả (câu đã dịch, giây/câu), có cache đĩa.
-
-    Giây/câu chỉ tính trên câu THỰC SỰ phải dịch — vòng thi có 5 phút nên backend
-    15s/câu là hỏng.
-    """
     if backend == "none":
         return list(texts), 0.0
 
@@ -175,8 +148,6 @@ def translate(texts: list[str], backend: str) -> tuple[list[str], float]:
         else:
             done = tr_hf(todo, backend)
         secs = (time.perf_counter() - t0) / len(todo)
-        # CHỈ cache câu thành công — cache câu hỏng thì lần sau nó im lặng trả
-        # lại tiếng Việt và bảng điểm về 0 mà không cảnh báo gì.
         ok = {s: d for s, d in zip(todo, done) if d}
         if len(ok) < len(todo):
             print(f"[dịch] ⚠ {len(todo) - len(ok)}/{len(todo)} câu hỏng, "
@@ -232,8 +203,6 @@ if __name__ == "__main__":
     processed = ROOT / "data" / f"processed_{args.dataset}"
     manifest = json.loads((processed / "manifest.json").read_text(encoding="utf-8"))
 
-    # Cố ý dùng [] chứ không .get(): thiếu khoá phải nổ ngay, thay vì âm thầm
-    # encode bằng sai model rồi trả kết quả rác.
     clip_model = manifest["clip_model"]
     clip_pretrained = manifest["clip_pretrained"]
 
@@ -243,19 +212,17 @@ if __name__ == "__main__":
     meta = pd.read_parquet(processed / "metadata.parquet")
     if "image_path" in meta.columns:
         meta["image_path"] = corpus.resolve_paths(meta["image_path"])
-    index = faiss.read_index(str(processed / "faiss.index"))
+    feats = np.load(processed / "features.npy", mmap_mode="r")
 
-    # Giao ước sống còn: dòng i của parquet <-> vector i của FAISS. Lệch một
-    # dòng thì kết quả vẫn trông bình thường, chỉ là ảnh sai.
-    assert index.ntotal == len(meta), (
-        f"index có {index.ntotal} vector nhưng metadata có {len(meta)} dòng "
-        f"— chạy lại src/prepare_data.py")
+    assert feats.shape[0] == len(meta), (
+        f"features.npy có {feats.shape[0]} vector nhưng metadata có {len(meta)} "
+        f"dòng — chạy lại src/prepare_data.py")
 
     queries = pd.read_csv(queries_path)
     if args.limit:
         queries = queries.head(args.limit).reset_index(drop=True)
     print(f"[eval] {args.dataset} · {clip_model}/{clip_pretrained} · "
-          f"{index.ntotal} vector · {len(queries)} query · field={args.field} "
+          f"{feats.shape[0]} vector · {len(queries)} query · field={args.field} "
           f"· translate={args.translate}")
     if args.limit:
         print(f"[eval] ⚠ CHỈ {args.limit} query đầu — con số KHÔNG so được với "
@@ -277,23 +244,18 @@ if __name__ == "__main__":
                  args.rerank_depth if args.rerank != "none" else 0,
                  args.rerank_deep if args.rerank == "vlm-auto" else 0)
     if args.ensemble > 0:
-        # Ensemble chấm TOÀN corpus nên bỏ FAISS ở đây và tự nhân ma trận.
         import ensemble as ens
-        feats = np.load(processed / "features.npy", mmap_mode="r")
         print(f"[ensemble] + {args.ensemble}·z({ens.PHU[0]}) trên toàn corpus")
-        S = np.asarray(feats, dtype=np.float32) @ qvecs.T          # (n_kf, n_query)
-        ids = np.empty((len(qvecs), n_cand), dtype=np.int64)
-        scores = np.empty((len(qvecs), n_cand), dtype=np.float32)
-        for i, t in enumerate(texts):
-            tong = ens.ghep(S[:, i], t, w=args.ensemble)
-            top = np.argsort(-tong, kind="stable")[:n_cand]
-            ids[i], scores[i] = top, tong[top]
-        del S
-    else:
-        scores, ids = index.search(qvecs, n_cand)
+    S = np.asarray(feats, dtype=np.float32) @ qvecs.T              # (n_kf, n_query)
+    ids = np.empty((len(qvecs), n_cand), dtype=np.int64)
+    scores = np.empty((len(qvecs), n_cand), dtype=np.float32)
+    for i, t in enumerate(texts):
+        tong = (ens.ghep(S[:, i], t, w=args.ensemble) if args.ensemble > 0
+                else S[:, i])
+        top = np.argsort(-tong, kind="stable")[:n_cand]
+        ids[i], scores[i] = top, tong[top]
+    del S
 
-    # ---------------------------------------------------------------- re-rank
-    # Chỉ xáo lại thứ tự BÊN TRONG rổ đã lấy về; không thêm ứng viên mới.
     n_bad_basket = n_deep = 0
     if args.rerank != "none":
         D = min(args.rerank_depth, ids.shape[1])

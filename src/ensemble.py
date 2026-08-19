@@ -1,9 +1,3 @@
-"""Cộng điểm của một encoder thứ hai trên TOÀN corpus.
-
-Khác `rerank.encoder_scores` ở chỗ nó chấm cả 177.321 khung chứ không chỉ rổ
-top-100, nên đổi được cả R@100. Cơ sở đo và cách chọn trọng số: xem
-docs/bao_cao_he_thong.tex, mục "Ghép hai encoder trên toàn corpus".
-"""
 
 from __future__ import annotations
 
@@ -15,8 +9,6 @@ import numpy as np
 ROOT = Path(__file__).resolve().parent.parent
 KERNEL_OUT = ROOT / "data" / "kernel_out"
 
-# Phải KHÁC HỌ với encoder chính, không chỉ khác tên: ghép hai bản cùng kiến trúc
-# thì chúng sai giống nhau và không thêm được gì (đã đo với L-16-384).
 PHU = ("ViT-B-16-SigLIP2-384", "webli")
 PHU_FEATURES = KERNEL_OUT / "features_ViT-B-16-SigLIP2-384__webli.npy"
 
@@ -29,12 +21,8 @@ def san_sang() -> bool:
 
 
 @lru_cache(maxsize=1)
+# Giữ float32 trong RAM. Đổi về mmap float16 = 45,8 s/truy vấn (phụ lục B).
 def _features() -> np.ndarray:
-    """Vector ảnh của encoder phụ, đã đổi sang float32 và giữ trong RAM.
-
-    ⚠️ Đừng đổi lại thành mmap float16 rồi ép kiểu ở mỗi lần tìm — 45,8 giây
-    một truy vấn. Xem sổ bẫy trong báo cáo.
-    """
     if not san_sang():
         raise FileNotFoundError(
             f"thiếu {PHU_FEATURES}.\nTải cùng chỗ với bộ vector chính "
@@ -60,17 +48,16 @@ def diem_phu(query: str) -> np.ndarray:
     return _features() @ v.numpy()[0].astype(np.float32)
 
 
+def features_phu() -> np.ndarray:
+    return _features()
+
+
 def zscore(a: np.ndarray) -> np.ndarray:
     a = np.asarray(a, dtype=np.float64)
     return (a - a.mean()) / (a.std() + 1e-9)
 
 
 def ghep(diem_chinh: np.ndarray, query: str, w: float = W_MAC_DINH) -> np.ndarray:
-    """z(encoder chính) + w·z(encoder phụ).
-
-    `diem_chinh` phải là điểm của CẢ corpus — z-score trên rổ con cho thang khác
-    hẳn, khi đó w không còn đúng nghĩa như lúc hiệu chỉnh.
-    """
     p = diem_phu(query)
     if len(p) != len(diem_chinh):
         raise ValueError(

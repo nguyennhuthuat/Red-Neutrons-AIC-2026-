@@ -1,12 +1,3 @@
-"""Căn đúng khoảnh khắc trong video, cho dạng truy vấn TRAKE.
-
-Cửa sổ đáp án mỗi mốc thường dưới 10 frame còn keyframe cách nhau ~90 frame, nên
-bắt buộc giải mã video gốc. Giải mã rẻ (~494 fps) nhưng mã hoá đắt, nên chạy thô
-rồi tinh: keyframe làm mốc → quét thưa bước `coarse_step` → quét dày ±`fine_span`.
-
-Cơ sở đo cho từng hằng số (bán kính 60, encoder nhỏ cho bước căn tinh, ràng buộc
-thứ tự thời gian): xem docs/bao_cao_he_thong.tex, mục "Dạng TRAKE".
-"""
 
 from __future__ import annotations
 
@@ -35,11 +26,6 @@ def video_path(video_id: str) -> Path:
 
 
 def read_frames(video_id: str, frame_ids) -> tuple[list[int], list]:
-    """Đọc đúng những frame được yêu cầu. Trả (frame_id thật đọc được, ảnh PIL).
-
-    Đọc TUẦN TỰ và chỉ seek khi bước nhảy lớn: seek mất 0,12 s còn đọc một frame
-    chỉ mất 0,002 s, nên nhảy lung tung sẽ chậm gấp 60 lần đọc thẳng.
-    """
     import cv2
     from PIL import Image
 
@@ -104,22 +90,25 @@ def encode_text(text: str, model_name: str, pretrained: str) -> np.ndarray:
 
 _MODELS: dict = {}
 
-# Encoder cho bước CĂN TINH — cố ý khác encoder tìm kiếm. Căn tinh chỉ chọn 1
-# trong ~28 khung gần nhau nên model nhỏ đủ dùng và nhanh gấp 8,8 lần.
 ALIGN_MODEL = ("ViT-B-16-SigLIP2-256", "webli")
+
+NEO_MODEL = ("ViT-B-16-SigLIP2-384", "webli")
+NEO_FEATURES = (ROOT / "data" / "kernel_out"
+                / "features_ViT-B-16-SigLIP2-384__webli.npy")
+
+
+@lru_cache(maxsize=1)
+def _feat_neo():
+    """Vector của encoder chọn mỏ neo. Lùi về encoder chính nếu thiếu tệp."""
+    if NEO_FEATURES.exists():
+        return np.load(NEO_FEATURES, mmap_mode="r")
+    return _corpus()[1]
 
 
 def align_moment(video_id: str, text_vec: np.ndarray, anchor_frame: int, *,
                  model_name: str, pretrained: str,
                  window: int = 60, coarse_step: int = 5, fine_span: int = 6,
                  verbose: bool = False) -> tuple[int, float, int]:
-    """Tìm frame khớp `text_vec` nhất quanh `anchor_frame`.
-
-    Trả (frame_id tốt nhất, điểm, số lần mã hoá đã tốn). `window` tính bằng FRAME.
-
-    ⚠️ window=60 là con số ĐÃ ĐO trên hai nền encoder khác nhau, đừng nới rộng
-    cho "chắc ăn" — ±120 phá mất mốc đang đúng.
-    """
     n_enc = 0
 
     coarse = list(range(anchor_frame - window, anchor_frame + window + 1, coarse_step))
@@ -148,17 +137,6 @@ def align_moment(video_id: str, text_vec: np.ndarray, anchor_frame: int, *,
 
 
 def choose_anchors(scores: np.ndarray, frames=None) -> list[int]:
-    """Chọn mỏ neo cho từng mốc, ép đúng thứ tự thời gian.
-
-    `scores`: ma trận (N mốc, K ứng viên), ứng viên xếp sẵn theo thời gian tăng.
-    Trả list N chỉ số; truyền `frames` thì trả thẳng frame_idx.
-
-    Quy hoạch động O(N·K): dp[j][k] = S[j][k] + max(dp[j-1][k' < k]), lấy tiền tố
-    cực đại bằng `maximum.accumulate` nên không phải O(N·K²).
-
-    ⚠️ Đã thử và BỎ: z-score theo từng mốc (đường đi không đổi), phạt λ cho
-    khoảng cách giữa hai mốc (lỗ đều, không có vùng phẳng ⇒ khớp nhiễu).
-    """
     S = np.asarray(scores, dtype=np.float64)
     N, K = S.shape
     dp = np.full((N, K), -np.inf)
@@ -183,11 +161,6 @@ def choose_anchors(scores: np.ndarray, frames=None) -> list[int]:
 
 def align_sequence(video_id: str, texts, anchors, *, model_name: str | None = None,
                    pretrained: str | None = None, **kw) -> list[dict]:
-    """Căn cả một chuỗi mốc. `anchors` là frame_idx thô của từng mốc.
-
-    Giữ cả điểm trong kết quả để người thi thấy mốc nào đáng ngờ. Mặc định dùng
-    ALIGN_MODEL.
-    """
     if model_name is None:
         model_name, pretrained = ALIGN_MODEL
     out = []
@@ -222,28 +195,8 @@ def _nhom_video() -> dict:
     return out
 
 
-def rank_videos_scores(S: np.ndarray, top_k: int = 10,
-                       nen: int = 50) -> list[tuple[str, float]]:
-    """Giai đoạn 1a từ ma trận điểm sẵn có. `S`: (n_mốc, n_khung toàn corpus).
-
-    Chấm mỗi video bằng TỔNG điểm của đường đi đã ép thứ tự thời gian, thay vì
-    bằng điểm cao nhất mà một mốc bất kỳ đạt được. Luật cũ cho một video thắng chỉ
-    nhờ tình cờ chứa MỘT khung giống MỘT mốc; luật này bắt video phải chứa được cả
-    chuỗi. Không thêm tham số nào — ràng buộc thứ tự là thứ đề bài cho sẵn.
-
-    Đo trên bộ 5 chuỗi: luật cũ đúng 4/5, luật này đúng 5/5, kéo điểm TRAKE
-    đầu-cuối từ 0,3467 lên 0,3967. ⚠️ Chênh lệch đó là MỘT chuỗi trên bộ 5 chuỗi —
-    cơ chế vững nhưng bộ đo quá nhỏ để khẳng định độ lớn.
-
-    `nen` = lọc thô bằng điểm cao nhất trước khi chạy quy hoạch động, vì chạy QHĐ
-    cho cả 873 video mất 8,6 giây. Luật cũ xếp video đúng ở hạng 1-2 trên cả 5
-    chuỗi nên 50 là biên rất rộng; đặt 0 để tắt lọc.
-
-    Nhận ma trận điểm thay vì tự mã hoá câu để BÊN GỌI DÙNG LẠI ENCODER CỦA MÌNH:
-    giao diện đã giữ sẵn một bản SigLIP2-L, và nạp bản thứ hai (~1,7 GB) làm cạn
-    bộ nhớ ảo của Windows. Đã dính thật, chỉ lộ khi chạy giao diện chứ không lộ ở
-    phép đo nào.
-    """
+def rank_videos_scores(S: np.ndarray, top_k: int = 10, nen: int = 50,
+                       kem_neo: bool = False):
     S = np.asarray(S)
     nhom = _nhom_video()
     ung_vien = nhom.keys()
@@ -251,22 +204,20 @@ def rank_videos_scores(S: np.ndarray, top_k: int = 10,
         tho = {v: S[:, ix].max() for v, ix in nhom.items()}
         ung_vien = sorted(tho, key=tho.get, reverse=True)[:nen]
 
-    diem = {}
+    diem, neo = {}, {}
     for v in ung_vien:
         s = S[:, nhom[v]]
         if s.shape[1] < s.shape[0]:        # video ít keyframe hơn số mốc
             continue
         loc = choose_anchors(s)
         diem[v] = float(sum(s[j, loc[j]] for j in range(s.shape[0])))
-    return sorted(diem.items(), key=lambda kv: -kv[1])[:top_k]
+        # Hàng metadata của từng mốc — để giao diện bày cả chuỗi, không chỉ 1 ảnh.
+        neo[v] = [int(nhom[v][k]) for k in loc]
+    xh = sorted(diem.items(), key=lambda kv: -kv[1])[:top_k]
+    return [(v, d, neo[v]) for v, d in xh] if kem_neo else xh
 
 
 def rank_videos(texts, top_k: int = 10, nen: int = 50) -> list[tuple[str, float]]:
-    """Bản tiện dụng: tự mã hoá câu rồi gọi `rank_videos_scores`.
-
-    Dùng cho script đo. Giao diện thì nên tự dựng ma trận điểm bằng encoder đã
-    nạp sẵn của nó rồi gọi thẳng `rank_videos_scores`.
-    """
     meta, feat, man = _corpus()
     T = np.vstack([encode_text(t, man["clip_model"], man["clip_pretrained"])
                    for t in texts])
@@ -274,18 +225,9 @@ def rank_videos(texts, top_k: int = 10, nen: int = 50) -> list[tuple[str, float]
                               top_k=top_k, nen=nen)
 
 
+# ĐỪNG cộng ensemble vào bước này: 50% -> 42% (phụ lục B, mục trake.py).
 def keyframe_anchors(video_id: str, texts) -> list[int]:
-    """Giai đoạn 1b: chọn mỏ neo (frame_idx) cho từng mốc trong một video.
-
-    Chấm keyframe bằng ENCODER TÌM KIẾM trong manifest (không phải ALIGN_MODEL),
-    rồi ép thứ tự thời gian.
-
-    ⚠️ ĐỪNG cộng `ensemble` vào đây dù nó ăn ở KIS và Q&A — đo trên 26 mốc TRAKE
-    thì nó LỖ (trong ±60: 50% → 46% → 42% khi w tăng). Ensemble giúp truy xuất
-    toàn corpus nhưng hại phân biệt tinh trong một video đã biết. Nó vẫn dùng
-    được ở bước chọn VIDEO, chỉ cấm ở bước chọn MỎ NEO này.
-    """
-    meta, feat, man = _corpus()
+    meta, _, _ = _corpus()
     sub = meta[meta.video_id == video_id]
     if sub.empty:
         raise ValueError(f"không có keyframe nào của {video_id} trong kho")
@@ -294,25 +236,16 @@ def keyframe_anchors(video_id: str, texts) -> list[int]:
     o = np.argsort(frames)                       # ứng viên phải xếp theo thời gian
     idx, frames = idx[o], frames[o]
 
-    T = np.vstack([encode_text(t, man["clip_model"], man["clip_pretrained"])
-                   for t in texts])
+    feat = _feat_neo()
+    T = np.vstack([encode_text(t, *NEO_MODEL) for t in texts])
     S = T @ np.asarray(feat[idx], dtype=np.float32).T
     return choose_anchors(S, frames=frames)
 
 
 def locate_sequence(video_id: str, texts, **kw) -> list[dict]:
-    """Chạy trọn TRAKE trên một video: chọn mỏ neo (có ép thứ tự) rồi căn tinh.
-
-    Đây là đường chạy nên dùng; `align_sequence` là tầng dưới, đòi tự đưa mỏ neo.
-    """
     return align_sequence(video_id, list(texts),
                           keyframe_anchors(video_id, texts), **kw)
 
 
 def submission_row(video_id: str, moments) -> tuple:
-    """Dựng một dòng nộp TRAKE: `(video_id, frame_id₁, …, frame_idₙ)`.
-
-    Thứ tự mốc phải giữ nguyên thứ tự đề bài — chấm theo từng giai đoạn, đảo thứ
-    tự là mất điểm dù tìm đúng cả n khoảnh khắc.
-    """
     return (video_id, *[int(m["frame_idx"]) for m in moments])

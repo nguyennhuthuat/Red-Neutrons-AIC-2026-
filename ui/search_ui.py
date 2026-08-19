@@ -1,13 +1,7 @@
-"""Giao diện thi: ba tab cho ba dạng đề KIS / Q&A / TRAKE.
-
-    streamlit run ui/search_ui.py
-
-Cần artifact do src/prepare_data.py dựng trong data/processed_hcmc2026/.
-Cơ sở đo của các giá trị mặc định: docs/bao_cao_he_thong.tex, mục "Giao diện thi".
-"""
 
 from pathlib import Path
 import json
+import os
 import sys
 
 import numpy as np
@@ -16,6 +10,9 @@ import streamlit as st
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
+
+os.environ.setdefault("VLM_CHO_429", "0")
+
 import corpus  # noqa: E402  (nạp metadata + sửa đường dẫn ảnh cho đúng máy)
 import ensemble  # noqa: E402  (encoder phụ, cộng điểm trên toàn corpus)
 import rerank  # noqa: E402  (tầng re-rank, xem src/rerank.py)
@@ -65,11 +62,6 @@ def load_clip():
 
 
 def preprocess_query(query: str, mode: str = "vi") -> tuple[str, str | None]:
-    """Chuẩn bị câu để đưa vào encoder. Trả (câu dùng, ghi chú hiển thị).
-
-    Ô nhập chính là TIẾNG VIỆT vì SigLIP2 đọc thẳng được. Dịch hỏng thì lùi về
-    câu gốc — đường lùi êm, không về 0 như thời ViT-B-32.
-    """
     query = (query or "").strip()
     if mode != "google" or not query:
         return query, None
@@ -89,42 +81,80 @@ def encode_text(query: str) -> np.ndarray:
     return vec.astype(np.float32)
 
 
-def search(query: str, top_k: int, ens_w: float = 0.0) -> pd.DataFrame:
-    """`query` đã qua preprocess_query.
-
-    `ens_w > 0` thì bỏ FAISS và tự nhân ma trận: FAISS chỉ trả top-k của encoder
-    chính, mà thứ ta cần chính là những khung encoder chính bỏ sót.
-    """
+def search(query: str, top_k: int, ens_w: float = 0.0,
+           mark_rows: list[int] | None = None, beta: float = 0.4,
+           thuong_video: float = 3.0) -> pd.DataFrame:
     meta = load_metadata()
-    index = load_index()
     qvec = encode_text(query)
 
-    if qvec.shape[1] != index.d:
-        st.error(f"Encoder dim {qvec.shape[1]} != index dim {index.d}. "
-                 f"Wrong CLIP variant — check which model BTC used.")
+    dim = load_features_ram().shape[1]
+    if qvec.shape[1] != dim:
+        st.error(f"Encoder dim {qvec.shape[1]} != vector dim {dim}. "
+                 f"Sai biến thể CLIP — kiểm lại manifest.json.")
         st.stop()
 
+    loai = (set(st.session_state.get("loai_video", []))
+            if st.session_state.get("dung_tich", False) else set())
+    mark_rows = [int(x) for x in (mark_rows or [])]
+    if mark_rows:
+        ens_w = ens_w or ensemble.W_MAC_DINH   # phản hồi cần cả hai encoder
+
     if ens_w > 0:
-        chinh = load_features_ram() @ qvec[0]
-        tong = ensemble.ghep(chinh, query, w=ens_w)
+        FR = load_features_ram()
+        chinh = FR @ qvec[0]
+        phu = ensemble.diem_phu(query)
+        if mark_rows:
+            mF = FR[mark_rows].mean(0)
+            mF /= np.linalg.norm(mF) + 1e-9
+            G = ensemble.features_phu()
+            mG = G[mark_rows].mean(0)
+            mG /= np.linalg.norm(mG) + 1e-9
+            chinh = chinh + beta * (FR @ mF)
+            phu = phu + beta * (G @ mG)
+        tong = ensemble.zscore(chinh) + ens_w * ensemble.zscore(phu)
+        if mark_rows and thuong_video:
+            vids = set(meta["video_id"].to_numpy()[mark_rows])
+            tong = tong + thuong_video * np.isin(meta["video_id"].to_numpy(),
+                                                 list(vids))
+        if loai:
+            tong = np.where(np.isin(meta["video_id"].to_numpy(), list(loai)),
+                            -np.inf, tong)
         top = np.argsort(-tong, kind="stable")[:top_k]
         scores, ids = tong[None, top], top[None, :]
     else:
-        scores, ids = index.search(qvec, top_k)
+        scores, ids = load_index().search(qvec, top_k)   # chỉ nạp khi thật cần
     hits = meta.iloc[ids[0]].copy()
     hits["score"] = scores[0]
-    # Giữ số hàng GỐC: vừa là chỉ số vector, vừa là thứ nút "tìm ảnh tương tự"
-    # cần. reset_index(drop=True) làm mất nó.
     hits["row_id"] = ids[0]
     return hits.reset_index(drop=True)
 
 
-def diversify_by_video(hits: pd.DataFrame, per_video: int) -> pd.DataFrame:
-    """Giữ tối đa `per_video` khung mỗi video.
+@st.cache_data(show_spinner=False, max_entries=512)
+def _anh_mo(path: str) -> bytes:
+    import io
+    from PIL import Image
+    im = Image.open(path).convert("RGB")
+    im = Image.blend(im, Image.new("RGB", im.size, (255, 255, 255)), 0.72)
+    buf = io.BytesIO()
+    im.save(buf, format="JPEG", quality=70)
+    return buf.getvalue()
 
-    ⚠️ Làm TỤT điểm chấm tự động — đừng bật cho danh sách nộp. Hữu ích cho người
-    ngồi tìm thì ngược lại.
-    """
+
+def bo_gan_trung(hits: pd.DataFrame, nguong: float = 0.95) -> pd.DataFrame:
+    if hits.empty or "row_id" not in hits:
+        return hits
+    feats = load_features()
+    giu, vecs = [], []
+    for j, rid in enumerate(hits["row_id"].to_numpy()):
+        v = np.asarray(feats[int(rid)], dtype=np.float32)
+        if any(float(v @ u) >= nguong for u in vecs):
+            continue
+        giu.append(j)
+        vecs.append(v)
+    return hits.iloc[giu].reset_index(drop=True)
+
+
+def diversify_by_video(hits: pd.DataFrame, per_video: int) -> pd.DataFrame:
     return (hits.groupby("video_id", sort=False)
                 .head(per_video)
                 .reset_index(drop=True))
@@ -138,21 +168,10 @@ def load_features():
 
 @st.cache_resource(show_spinner="Nạp vector vào RAM cho ensemble ...")
 def load_features_ram():
-    """Bản nằm hẳn trong RAM (726 MB), dùng cho ensemble.
-
-    Ensemble nhân với CẢ 177k khung mỗi truy vấn nên mmap là chậm không chấp nhận
-    được. Tìm-bằng-ảnh vẫn dùng mmap vì nó chỉ đụng vài nghìn hàng.
-    """
     return np.load(PROCESSED / "features.npy")
 
 
 def search_by_image(row_id: int, top_k: int, same_video_only: bool) -> pd.DataFrame:
-    """Tìm khung giống khung `row_id`. Vector có sẵn nên gần như miễn phí.
-
-    Bấm đại một ảnh rồi tìm ảnh giống là VÔ ÍCH (láng giềng của ảnh sai thì cũng
-    sai): 0.2123 so với 0.8000 khi đã khoanh đúng video. Nên `same_video_only`
-    mặc định BẬT.
-    """
     meta = load_metadata()
     feats = load_features()
     v = np.asarray(feats[row_id], dtype=np.float32)
@@ -172,18 +191,15 @@ def search_by_image(row_id: int, top_k: int, same_video_only: bool) -> pd.DataFr
 
 
 def group_by_video(hits: pd.DataFrame) -> pd.DataFrame:
-    """Gộp kết quả về mức VIDEO, giữ khung điểm cao nhất làm đại diện.
-
-    CLIP tìm đúng VIDEO 0.988 nhưng đúng KHUNG chỉ 0.654 — nó gần như luôn đúng
-    video, chỉ không biết đúng giây, mà giây thì người liếc qua là thấy.
-    """
     g = (hits.groupby("video_id", sort=False)
              .agg(n_hit=("score", "size"), score=("score", "max"),
                   row=("score", "idxmax"))
              .sort_values("score", ascending=False)
              .reset_index())
-    return g.join(hits.loc[g["row"], ["n", "pts_time", "frame_idx", "image_path"]]
-                      .reset_index(drop=True))
+    cot = ["n", "pts_time", "frame_idx", "image_path"]
+    if "row_id" in hits.columns:
+        cot.append("row_id")
+    return g.join(hits.loc[g["row"], cot].reset_index(drop=True))
 
 
 def all_frames_of(video_id: str) -> pd.DataFrame:
@@ -191,16 +207,9 @@ def all_frames_of(video_id: str) -> pd.DataFrame:
     return meta[meta["video_id"] == video_id].copy()
 
 
-
 def apply_rerank(hits: pd.DataFrame, query_vi: str, query_en: str,
                  depth: int, use_encoder: bool,
                  deep: int = 0) -> tuple[pd.DataFrame, np.ndarray, bool]:
-    """Chấm lại `depth` kết quả đầu bằng VLM (+ encoder thứ hai nếu bật).
-
-    `deep > 0` bật đào sâu thích ứng: chỉ chấm tiếp tới `deep` khi rổ đáng ngờ.
-    Trả (hits đã xếp lại, điểm VLM, có đào sâu hay không); hits thêm cột `vlm`,
-    `rr`, phần đuôi chưa chấm mang vlm = NaN.
-    """
     base = hits["score"].to_numpy()
     went_deep = False
 
@@ -226,8 +235,6 @@ def apply_rerank(hits: pd.DataFrame, query_vi: str, query_en: str,
             enc = rerank.encoder_scores(query_en, head["image_path"].tolist())
 
     rr = rerank.combine(head["score"].to_numpy(), vlm=vlm, enc=enc)
-    # stable: rất nhiều ảnh hoà điểm VLM (trung bình 9,8 ảnh cùng 10đ trong rổ
-    # 100) — khi hoà thì phải giữ nguyên thứ tự CLIP, đừng để sort xáo lung tung.
     order = np.argsort(-rr, kind="stable")
 
     head = head.iloc[order].copy()
@@ -242,31 +249,44 @@ def apply_rerank(hits: pd.DataFrame, query_vi: str, query_en: str,
 
 def frame_card(hit, show_similar_button=True):
     """Một ô ảnh + thông tin nộp bài + nút tìm khung tương tự trong cùng video."""
+    vd = str(hit["video_id"])
+    bi_loai = vd in st.session_state.get("loai_video", [])
     img = hit.get("image_path", "")
     if img and Path(img).exists():
-        st.image(img, width="stretch")
+        st.image(_anh_mo(img) if bi_loai else img, width="stretch")
     else:
         st.markdown(":grey_background[no image]")
 
-    # ⚠️ frame_id BTC chấm là `frame_idx` (= pts_time×fps), KHÔNG phải `n`
-    # (số thứ tự keyframe). Hai số khác nhau ở mọi hàng.
     st.code(f"{hit['video_id']}, {int(hit['frame_idx'])}", language=None)
 
     v = hit.get("vlm", np.nan)
-    badge = "" if pd.isna(v) else f" · :orange[VLM {v:.0f}/10]"
-    sc = hit.get("score", np.nan)
-    sc_txt = "" if pd.isna(sc) else f" · score={sc:.3f}"
-    st.caption(f"t={hit['pts_time']:.1f}s · n={int(hit['n'])}{sc_txt}{badge}")
+    phu = [f"{hit['pts_time']:.0f}s"]
+    if not pd.isna(v):
+        phu.append(f":orange[VLM {v:.0f}]")
+    st.caption(" · ".join(phu))
 
-    if show_similar_button and "row_id" in hit:
-        # key phải duy nhất trong cả trang, dùng row_id vì nó là số hàng toàn cục
-        if st.button("Khung tương tự", key=f"sim_{int(hit['row_id'])}",
-                     help="Tìm khung giống khung này TRONG CÙNG VIDEO. "
-                          "Đo được: giới hạn trong video cho FINAL 0.800, "
-                          "còn tìm toàn corpus chỉ 0.678."):
-            st.session_state["seed_row"] = int(hit["row_id"])
-            # Bắt buộc rerun: panel kết quả ở ĐẦU trang, đã vẽ xong trước khi nút ở
-            # cuối trang được bấm. Không rerun thì phải bấm hai lần mới thấy.
+    if "row_id" in hit:
+        rid = int(hit["row_id"])
+        da = rid in st.session_state.get("marked", [])
+        c1, c2, c3 = st.columns(3) if show_similar_button else (st, None, st)
+        if c1.checkbox("OK", value=da, key=f"mk_{rid}",
+                       help="Đúng hướng — đưa vào phản hồi") != da:
+            ds = list(st.session_state.get("marked", []))
+            ds.remove(rid) if da else ds.append(rid)
+            st.session_state["marked"] = ds
+            st.rerun()
+        if c3.checkbox("Loại", value=bi_loai, key=f"lk_{rid}",
+                       help=f"Làm mờ mọi thẻ của {vd} — đã xem, không phải cái này"
+                       ) != bi_loai:
+            ds = set(st.session_state.get("loai_video", []))
+            ds.discard(vd) if bi_loai else ds.add(vd)
+            st.session_state["loai_video"] = list(ds)
+            st.rerun()
+        if c2 is not None and c2.button(
+                "≈", key=f"sim_{rid}",
+                help="Tìm khung giống khung này TRONG CÙNG VIDEO. Đo được: giới "
+                     "hạn trong video cho FINAL 0.800, toàn corpus chỉ 0.678."):
+            st.session_state["seed_row"] = rid
             st.rerun()
 
 
@@ -287,13 +307,33 @@ def show_videos(hits, ncol):
         cols = st.columns(ncol)
         for col, (_, v) in zip(cols, vids.iloc[start:start + ncol].iterrows()):
             with col:
+                bi_loai = v["video_id"] in st.session_state.get("loai_video", [])
                 img = v.get("image_path", "")
                 if img and Path(img).exists():
-                    st.image(img, width="stretch")
-                st.caption(f"**{v['video_id']}** · {int(v['n_hit'])} khung khớp\n\n"
-                           f"tốt nhất n={int(v['n'])} · t={v['pts_time']:.1f}s "
-                           f"· score={v['score']:.3f}")
-                if st.button("Mở", key=f"open_{v['video_id']}"):
+                    st.image(_anh_mo(img) if bi_loai else img, width="stretch")
+                st.code(f"{v['video_id']}, {int(v['frame_idx'])}", language=None)
+                st.caption(f"{int(v['n_hit'])} khung khớp")
+
+                rid_v = int(v["row_id"]) if "row_id" in v.index else None
+                d1, d2 = st.columns(2)
+                if rid_v is not None:
+                    da_v = rid_v in st.session_state.get("marked", [])
+                    # Khoá theo row_id chứ KHÔNG theo video_id — xem phụ lục B.
+                    if d1.checkbox("OK", value=da_v, key=f"mkv_{rid_v}",
+                                   help="Đúng hướng — đưa vào phản hồi") != da_v:
+                        ds = list(st.session_state.get("marked", []))
+                        ds.remove(rid_v) if da_v else ds.append(rid_v)
+                        st.session_state["marked"] = ds
+                        st.rerun()
+                if d2.checkbox("Loại", value=bi_loai, key=f"loai_{v['video_id']}",
+                               help="Làm mờ video này — đã xem, không phải cái này"
+                               ) != bi_loai:
+                    ds = set(st.session_state.get("loai_video", []))
+                    ds.discard(v["video_id"]) if bi_loai else ds.add(v["video_id"])
+                    st.session_state["loai_video"] = list(ds)
+                    st.rerun()
+                if st.button("Mở toàn bộ khung", key=f"open_{v['video_id']}",
+                             width="stretch"):
                     st.session_state["open_video"] = v["video_id"]
 
     vid = st.session_state.get("open_video")
@@ -307,8 +347,6 @@ def show_videos(hits, ncol):
 
         frames = all_frames_of(vid)
         frames["row_id"] = frames.index
-        # Khung không lọt rổ để TRỐNG chứ không điền 0: trống = "chưa chấm",
-        # 0 = "chấm rồi, không liên quan" — hai chuyện khác nhau.
         frames["score"] = frames["row_id"].map(hits.set_index("row_id")["score"])
         st.caption(f"{len(frames)} khung, xếp theo thời gian. "
                    f"Khung có điểm là khung đã lọt vào kết quả tìm kiếm.")
@@ -318,84 +356,121 @@ def show_videos(hits, ncol):
 st.title("RED-NEUTRONS — AIC 2026")
 
 with st.sidebar:
-    st.header("Settings")
-    top_k = st.slider("Top-K results", 10, 200, 50, step=10)
-    # Mặc định 20 = tắt hẳn. Xem docstring diversify_by_video: mọi mức < 20 đều
-    # làm tụt điểm KIS. Chỉ hạ xuống khi đang DÒ dữ liệu chứ không phải khi thi.
-    per_video = st.slider("Max keyframes per video", 1, 20, 20,
-                          help="20 = tắt. Hạ xuống chỉ để dò dữ liệu — đo được là "
-                               "làm tụt điểm KIS (5→0.4667, 3→0.4346 so với 0.4765)")
-    cols_per_row = st.slider("Grid columns", 3, 8, 5)
-
-    st.divider()
-    st.subheader("Cách hiển thị")
+    top_k = st.slider("Số ô hiển thị", 20, 200, 50, step=10,
+                      help="Quét hết 50 ô rồi mới tìm lại — đo được là hơn hẳn "
+                           "dừng ở 20 (phút 2: 0,610 so với 0,565).")
+    cols_per_row = st.slider("Số cột", 3, 8, 5)
     view = st.radio(
-        "Chế độ", ["Theo video (nên dùng)", "Theo khung"], index=0,
-        help="Đo trên 81 query: đúng KHUNG trong top-100 chỉ 0.654, nhưng đúng "
-             "VIDEO tới 0.988 (80/81). L23: khung 0/8 → video 8/8. CLIP gần như "
-             "luôn tìm đúng video, chỉ không biết đúng giây — mà giây thì người "
-             "liếc qua là thấy.")
-    video_mode = view.startswith("Theo video")
+        "Xem theo", ["Video (nên dùng)", "Khung"], index=0, horizontal=True,
+        help="Đúng VIDEO 0,988 còn đúng KHUNG chỉ 0,654 — máy gần như luôn tìm "
+             "đúng video, chỉ không biết đúng giây, mà giây thì người liếc là thấy.")
+    video_mode = view.startswith("Video")
 
-    st.divider()
-    st.subheader("Re-rank")
-    st.caption(f"Đang tìm bằng **{CLIP_MODEL}** — nền {BASELINE:.4f} trên 81 query "
-               f"(bộ ViT-B-32 của BTC chỉ 0.4765)")
-    use_vlm = st.checkbox("Bật VLM re-rank (Gemini)", value=True)
-    rerank_depth = st.select_slider("Chấm lại bao nhiêu kết quả đầu",
-                                    options=[20, 50, 100], value=20,
-                                    help="20 ảnh ≈ 7 giây · 100 ảnh ≈ 35 giây")
-    # Mặc định TẮT vì lỗ ở danh sách nộp xếp tự động (nhóm dễ chiếm 84% và bị
-    # phá). Vẫn giữ vì với NGƯỜI thì đào sâu không bao giờ hại.
-    auto_deep = st.checkbox(
-        "Tự đào sâu khi rổ đáng ngờ", value=False,
-        help="Chấm rổ nông trước; nếu điểm 20 ứng viên đầu quá sát nhau thì chấm "
-             "tiếp tới rổ sâu. Đo được là KHÔNG cải thiện điểm tự động (0.7901 so "
-             "với 0.7951 khi chỉ chấm rổ 20) — nhưng hữu ích khi bạn đang tự tìm.")
-    deep_to = st.select_slider("Đào sâu tới", options=[100, 200, 300], value=200,
-                               disabled=not auto_deep)
-    # Chấm lại bằng encoder thứ hai TRÊN RỔ đã bỏ: ~50 giây CPU mà chỉ xáo
-    # trong rổ. "Ghép encoder" dưới đây dùng vector sẵn, chấm cả 177k khung.
-    use_encoder = False
+    with st.expander("Nâng cao — đã hiệu chỉnh, đừng đổi khi thi"):
+        st.caption(f"Encoder: **{CLIP_MODEL}** · nền {BASELINE:.4f} trên 81 truy vấn")
 
-    st.divider()
-    st.subheader("Ghép encoder thứ hai")
-    if not ensemble.san_sang():
-        ens_w = 0.0
-        st.caption(f"⚠️ Chưa có `{ensemble.PHU_FEATURES.name}` trong "
-                   f"`data/kernel_out/` — xem README mục cài đặt.")
-    else:
-        # Kéo được khung MỚI vào rổ nên đổi được cả R@100 (0.951 → 0.975).
-        # Cả dải 0.2-1.5 đều vượt nền; 0.5 chỉ tình cờ là điểm may nhất.
-        ens_w = st.select_slider(
-            "Trọng số encoder phụ", options=[0.0, 0.2, 0.3, 0.5, 0.7, 1.0, 1.5],
-            value=ensemble.W_MAC_DINH,
-            help="0 = tắt. Cộng z(SigLIP2-L-512) + w·z(SigLIP2-B16) trên cả 177k khung. "
-                 "FINAL: tắt 0.7901 · 0.2→0.8049 · 0.5→0.8148 · 0.7→0.8074 · 1.0→0.8025. "
-                 "Chậm hơn FAISS vài trăm ms vì phải nhân ma trận đầy đủ.")
+        bo_trung = st.checkbox(
+            "Gộp khung gần trùng (chỉ khi xem)", value=True,
+            help="23/50 ô đầu là bản gần trùng của một ô đứng trên. Gộp lại thì "
+                 "cùng 50 ô cho ~27 khoảnh khắc khác nhau. KHÔNG áp dụng cho bảng "
+                 "nộp — ở đó nó làm mất khung đáp án ở 10/81 truy vấn.")
+        nguong_trung = st.slider("Ngưỡng gần trùng", 0.90, 0.99, 0.95, 0.01,
+                                 disabled=not bo_trung)
 
-tab_kis, tab_qa, tab_trake = st.tabs(
-    ["KIS — tìm khoảnh khắc", "Q&A — trả lời câu hỏi", "TRAKE — chuỗi khoảnh khắc"])
+        # 20 = TẮT. Mọi mức thấp hơn đều làm tụt điểm; chỉ hạ khi đang DÒ dữ liệu.
+        per_video = st.slider("Tối đa số khung mỗi video", 1, 20, 20,
+                              help="20 = tắt. Hạ xuống làm TỤT điểm KIS "
+                                   "(5→0.4667, 3→0.4346 so với 0.4765).")
+
+        use_vlm = st.checkbox(
+            "VLM re-rank (Gemini) — chậm", value=False,
+            help="Đáng +0,010 ở gợi ý ngắn, +0,005 ở mô tả đầy đủ, nhưng mỗi lần "
+                 "tìm chậm thêm 9-20 giây (và 30 giây nữa nếu khoá bị chặn). "
+                 "Chỉ bật khi đã tìm xong và còn dư thời gian.")
+        rerank_depth = st.select_slider("Chấm lại bao nhiêu ô đầu",
+                                        options=[10, 20, 30, 50], value=20,
+                                        disabled=not use_vlm)
+        auto_deep = st.checkbox(
+            "Đào sâu khi rổ có vẻ hỏng", value=False, disabled=not use_vlm,
+            help="Lợi ở nhóm khó (0.215→0.262) nhưng hại ở nhóm dễ "
+                 "(0.906→0.882), mà nhóm dễ chiếm 84%. Với NGƯỜI ngồi tìm thì "
+                 "đào sâu không bao giờ hại, nên vẫn giữ nút.")
+        deep_to = st.select_slider("Đào sâu tới", options=[100, 200, 300],
+                                   value=200, disabled=not (use_vlm and auto_deep))
+        # Encoder thứ hai chấm lại rổ: đã đo là KHÔNG cộng dồn với VLM, chỉ chậm.
+        use_encoder = False
+
+        if not ensemble.san_sang():
+            ens_w = 0.0
+            st.caption(f"⚠️ Chưa có `{ensemble.PHU_FEATURES.name}` trong "
+                       f"`data/kernel_out/` — xem README mục cài đặt.")
+        else:
+            # Cả dải 0,2-1,5 đều vượt nền; 0,5 là điểm tốt nhất đã đo.
+            ens_w = st.select_slider(
+                "Trọng số encoder phụ", options=[0.0, 0.2, 0.3, 0.5, 0.7, 1.0, 1.5],
+                value=ensemble.W_MAC_DINH,
+                help="FINAL: tắt 0.7901 · 0.2→0.8049 · 0.5→0.8148 · 0.7→0.8074 "
+                     "· 1.0→0.8025.")
+
+tab_kis, tab_qa, tab_trake = st.tabs(["KIS", "Q&A", "TRAKE"])
+
 
 with tab_kis:
     query_vi = st.text_input(
-        "Câu truy vấn (tiếng Việt)",
-        # Placeholder phải tả cảnh CÓ THẬT trong corpus, nếu không hệ thống trả về
-        # hình hiệu đầu chương trình và người dùng tưởng nó hỏng.
+        "Gợi ý từ ban tổ chức (dán nguyên, tiếng Việt)",
         placeholder="vd: người phụ nữ đội nón lá đang hái dứa ngoài ruộng",
-        help="Gõ thẳng tiếng Việt như đề thi phát ra. SigLIP2 đọc được tiếng Việt "
-             "(0.7037 trên bộ eval); encoder ViT-B-32 cũ thì cho 0.0000 tuyệt đối.")
+        help="Dán NGUYÊN văn gợi ý. Đo được: nhờ LLM viết lại cho 'đầy đủ hơn' "
+             "làm TỤT điểm ở mọi mức (phút 2: 0,486 → 0,403).")
 
-    col_a, col_b = st.columns([1, 2])
-    tr_mode = col_a.selectbox(
-        "Xử lý câu", ["dịch sang tiếng Anh", "để nguyên tiếng Việt"], index=0,
-        help="Đo được: dịch 0.7210 · để nguyên 0.7037. Dịch hơn +0.017 nhưng tốn "
-             "~0,25 s và phụ thuộc mạng; hỏng thì tự lùi về câu gốc.")
-    query_en_override = col_b.text_input(
-        "Hoặc tự viết câu tiếng Anh (để trống nếu không cần)",
-        placeholder="women in ao dai posing in a lotus field",
-        help="Người viết tay tả sát hình hơn máy dịch (0.7802 so với 0.7210). Dùng "
-             "khi muốn diễn đạt lại theo cách khác.")
+    with st.expander("Cách xử lý câu"):
+        tr_mode = st.selectbox(
+            "Xử lý câu", ["dịch sang tiếng Anh", "để nguyên tiếng Việt"], index=0,
+            help="Đo lại 17/08 trên nền hiện tại: dịch 0.7827 · để nguyên 0.7457 "
+                 "(+0,037). Quan trọng hơn: dịch kéo R@100 từ 0,901 lên 0,975 — "
+                 "6 câu vốn KHÔNG lọt top-100 ở đâu cả nay đã hiện ra. ĐỪNG đổi "
+                 "sang 'để nguyên' trừ khi mất mạng; hỏng thì nó tự lùi về câu gốc.")
+        query_en_override = st.text_input(
+            "Hoặc tự viết câu tiếng Anh", placeholder="women in ao dai in a lotus field",
+            help="Chỉ dùng khi bạn thật sự tả sát hình. Đo được: máy dịch đã "
+                 "THẮNG người viết tay ở R@1 (0,556 so với 0,543) vì nó bám sát "
+                 "chữ trong đề, còn người viết trôi chảy thì xa mô tả pixel hơn.")
+
+    _cu = st.session_state.get("truy_van_truoc", "")
+    _moi = (query_vi or "").strip()
+    if _moi and _cu and not (_moi.startswith(_cu) or _cu.startswith(_moi)):
+        if st.session_state.get("marked") or st.session_state.get("loai_video"):
+            st.session_state["marked"] = []
+            st.session_state["loai_video"] = []
+            st.toast("Câu truy vấn mới — đã xoá đánh dấu và video đã loại")
+    if _moi:
+        st.session_state["truy_van_truoc"] = _moi
+
+    # ── Một dòng trạng thái cho cả hai cơ chế phản hồi ───────────────────────
+    marked = st.session_state.get("marked", [])
+    da_loai = st.session_state.get("loai_video", [])
+    beta = 0.4
+    if marked or da_loai:
+        s1, s2, s3 = st.columns([3, 1, 1])
+        phan = []
+        if marked:
+            phan.append(f"**{len(marked)}** khung đánh dấu")
+        if da_loai:
+            phan.append(f"**{len(da_loai)}** video đã loại")
+        s1.success(" · ".join(phan))
+        uu_tien = s2.toggle(
+            "Dùng ô tích để tìm", value=st.session_state.get("dung_tich", False),
+            key="dung_tich",
+            help="TẮT (mặc định): ô tích chỉ để lọc bằng mắt. BẬT: ô OK kéo kết "
+                 "quả về phía khung đã tích (+0,141 ở phút 2) và ô Loại gạt hẳn "
+                 "video khỏi tìm kiếm (+0,121) — nhưng danh sách sẽ xáo lại.")
+        if s3.button("Xoá hết", help="Bỏ mọi đánh dấu và mọi video đã loại"):
+            st.session_state["marked"] = []
+            st.session_state["loai_video"] = []
+            st.rerun()
+    else:
+        uu_tien = st.session_state.get("dung_tich", False)
+        st.caption("Tích **OK** ở thẻ đúng cảnh, tích **Loại** ở thẻ đã xem và "
+                   "thấy sai — thẻ bị loại sẽ mờ đi để bạn khỏi nhìn lại.")
 
     seed = st.session_state.get("seed_row")
     if seed is not None:
@@ -415,8 +490,6 @@ with tab_kis:
         st.divider()
 
     if query_vi.strip() or query_en_override.strip():
-        # Encoder ăn bản dịch, còn VLM luôn đọc TIẾNG VIỆT GỐC — nó hiểu tiếng Việt
-        # tốt và bản dịch chỉ làm mất chi tiết.
         if query_en_override.strip():
             query, note = query_en_override.strip(), "→ dùng câu tiếng Anh bạn tự viết"
         elif tr_mode.startswith("dịch"):
@@ -427,13 +500,13 @@ with tab_kis:
         if note:
             st.caption(note)
 
-        # Lấy rổ đủ sâu để tầng re-rank còn chỗ kéo kết quả từ dưới lên. Khi bật đào
-        # sâu thích ứng thì phải lấy sẵn tới `deep_to`, dù phần lớn query sẽ không dùng.
         depth = rerank_depth if use_vlm else 0
         deep = deep_to if (use_vlm and auto_deep) else 0
-        # Lấy ÍT NHẤT 100 ứng viên: danh sách nộp được phép 100 dòng và R@k lấy
-        # MAX trên k dòng đầu, nên mỗi dòng bỏ trống là một cơ hội bị vứt.
-        hits = search(query, max(top_k, depth, deep, 100), ens_w=ens_w)
+        hits = search(query, max(top_k, depth, deep, 100), ens_w=ens_w,
+                      # Ô tích chỉ đụng tới kết quả khi công tắc được bật.
+                      mark_rows=st.session_state.get("marked") if uu_tien else None,
+                      beta=beta,
+                      thuong_video=3.0 if uu_tien else 0.3)
 
         vlm_scores = None
         if use_vlm and depth:
@@ -443,47 +516,29 @@ with tab_kis:
             except Exception as exc:                       # thiếu API key, hết hạn mức...
                 st.warning(f"Re-rank hỏng, hiển thị kết quả CLIP thuần — {exc}")
 
-        # HAI danh sách, tối ưu NGƯỢC nhau — đừng gộp lại:
-        #   nop  = thứ tự thô, đủ 100 dòng   -> cho MÁY CHẤM
-        #   hits = đã đa dạng hoá, cắt top_k -> cho NGƯỜI XEM
-        # Gộp lại từng làm bảng nộp còn 24 dòng, vứt trắng 76 chỗ.
         nop = hits.iloc[:100]
         hits = diversify_by_video(hits, per_video).iloc[:top_k]
+        if bo_trung:
+            truoc = len(hits)
+            hits = bo_gan_trung(hits, nguong_trung)
+            if truoc != len(hits):
+                st.caption(f"đã gộp {truoc - len(hits)} khung gần trùng — còn "
+                           f"{len(hits)} khoảnh khắc khác nhau (chỉ ảnh hưởng "
+                           f"danh sách xem, danh sách nộp giữ nguyên 100 dòng)")
 
         if vlm_scores is not None:
             if rerank.all_failed(vlm_scores):
-                # Phân biệt rõ với trường hợp dưới: đây là lỗi ĐƯỜNG MẠNG, không
-                # phải kết luận gì về dữ liệu. Gộp chung là đổ oan cho corpus.
                 st.warning("VLM không chấm được ô nào (hết hạn mức hoặc mất mạng) — "
                            "đang hiển thị thứ tự CLIP thuần.")
             elif rerank.basket_uncertain(hits["score"].to_numpy(), shallow=rerank_depth):
-                # Cò dựa trên BIÊN ĐỘ điểm truy xuất (AUC 0.907). Đừng khôi phục luật cũ
-                # "đỉnh VLM < 10" — trên nền SigLIP2 nó chỉ còn đúng 31%.
                 st.error("⚠️ Điểm của các ứng viên đầu bảng quá sát nhau — dấu hiệu "
                          "**đáp án có thể không nằm trong rổ này**. Nên đổi cách diễn "
                          "đạt câu truy vấn, tăng độ sâu, hoặc tìm bằng ảnh.")
 
         st.caption(f"{len(hits)} keyframes from {hits['video_id'].nunique()} videos")
 
-        # ── bảng nộp ────────────────────────────────────────────────────────
-        # R@k lấy MAX trên k dòng đầu ⇒ thêm dòng không bao giờ làm mất điểm đã có.
-        # Bỏ trống chỗ trong 100 dòng là tự vứt cơ hội.
-        with st.expander(f"📋 Bảng nộp — {len(nop)} dòng", expanded=False):
-            nop = nop[["video_id", "frame_idx"]].copy()
-            nop.insert(0, "hạng", range(1, len(nop) + 1))
-            txt = "\n".join(f"{r.video_id}, {int(r.frame_idx)}"
-                            for r in nop.itertuples())
-            c1, c2 = st.columns([2, 3])
-            with c1:
-                st.download_button("Tải .csv", txt, file_name="submission.csv",
-                                   mime="text/csv")
-                st.caption(
-                    "Nộp đủ 100 dòng: R@k lấy MAX trên k dòng đầu nên dòng thêm "
-                    "chỉ có thể được điểm, không bao giờ mất.\n\n"
-                    "⚠️ Cột thứ hai là **frame_idx** (khung thật trong video), "
-                    "KHÔNG phải `n` (số thứ tự keyframe).")
-            with c2:
-                st.code(txt, language=None)
+        st.caption(f"{len(nop)} ứng viên · mã nộp nằm ngay dưới mỗi ảnh, "
+                   f"bấm vào là chép được")
 
         if video_mode:
             show_videos(hits, cols_per_row)
@@ -510,16 +565,51 @@ with tab_qa:
     qa_top = st.select_slider("Số ảnh đưa cho VLM xem", options=[10, 20, 30, 50],
                               value=20, key="qa_top")
 
-    if st.button("Tìm & trả lời", key="qa_go", type="primary"):
-        if not qa_desc.strip() or not qa_ques.strip():
-            st.warning("Cần cả mô tả lẫn câu hỏi.")
+    qa_marked = st.session_state.get("marked", [])
+    if qa_marked:
+        st.success(f"Đang dùng {len(qa_marked)} khung đánh dấu (đánh dấu ở tab KIS "
+                   f"hoặc ngay trong kết quả bên dưới)")
+    qa_uu_tien = st.checkbox(
+        "Ưu tiên video đã đánh dấu (chỉ bật khi CHẮC CHẮN)", value=False,
+        key="qa_uu_tien",
+        help="Điểm khung 0,8160 → 0,8440 NẾU nhận đúng video. Nhận nhầm thì mất "
+             "nhiều hơn được: hoà vốn ở 84%, xem báo cáo phụ lục B.")
+
+    # HAI BƯỚC, không gộp. Đo được: 30/51 câu trả lời sai là vì khung đáp án nằm
+    # NGOÀI rổ ảnh đưa cho VLM (đúng 79% khi trong rổ, 30% khi ngoài). Gộp một nút
+    # thì người thi tiêu lời gọi API trên rổ CHƯA đánh dấu — hỏng đúng chỗ đắt nhất.
+    b1, b2 = st.columns(2)
+    if b1.button("1 · Tìm khung", key="qa_tim"):
+        st.session_state["qa_da_tim"] = True
+    tra_loi = b2.button("2 · Trả lời từ rổ hiện tại", key="qa_go",
+                        type="primary", disabled=not st.session_state.get("qa_da_tim"))
+
+    # Mô tả đổi thì rổ cũ vô nghĩa, buộc tìm lại.
+    if st.session_state.get("qa_desc_truoc") != qa_desc:
+        st.session_state["qa_desc_truoc"] = qa_desc
+        st.session_state["qa_da_tim"] = False
+
+    if st.session_state.get("qa_da_tim"):
+        if not qa_desc.strip():
+            st.warning("Cần mô tả sự kiện.")
+        elif tra_loi and not qa_ques.strip():
+            st.warning("Cần câu hỏi để trả lời.")
         else:
             import qa as qamod
-            hits = search(qa_desc.strip(), max(qa_top, 100), ens_w=ens_w)
-            with st.spinner("Đang hỏi VLM ..."):
-                got = qamod.answer_over_hits(qa_ques.strip(), hits,
-                                             desc=qa_desc.strip(), top=qa_top)
-            if got is None:
+            hits = search(qa_desc.strip(), max(qa_top, 100), ens_w=ens_w,
+                          mark_rows=qa_marked,
+                          thuong_video=3.0 if qa_uu_tien else 0.3)
+            got = None
+            if tra_loi:
+                with st.spinner("Đang hỏi VLM ..."):
+                    got = qamod.answer_over_hits(qa_ques.strip(), hits,
+                                                 desc=qa_desc.strip(), top=qa_top)
+            if not tra_loi:
+                st.info(f"Rổ đã dựng, chưa tốn lời gọi API nào. **Tích OK ở khung "
+                        f"đúng cảnh** rồi mới bấm bước 2 — khung đáp án phải nằm "
+                        f"trong {qa_top} ảnh đầu, nếu không thì VLM không có gì "
+                        f"để đọc (đo được: trong rổ đúng 79%, ngoài rổ 30%).")
+            elif got is None:
                 st.error("Không gọi được VLM (hết hạn mức hoặc mất mạng). Dưới đây "
                          "là kết quả tìm kiếm thuần — tự đọc ảnh và tự trả lời.")
             else:
@@ -532,31 +622,18 @@ with tab_qa:
                     st.caption(f"mức chắc chắn {got['confidence']:.0f}/10 · {got['reason']}")
                     st.code(f"{got['video_id']}, {got['frame_idx']}, {got['answer']}",
                             language=None)
-                    # Khung NỘP theo CLIP top-1, không phải khung VLM chọn: VLM chọn ảnh nào
-                    # nó TRẢ LỜI ĐƯỢC, kể cả ảnh ở video khác.
                     if got["vlm_frame_idx"] != got["frame_idx"]:
                         st.warning(
                             f"VLM đọc đáp án từ **{got['vlm_video_id']}** frame "
                             f"{got['vlm_frame_idx']}, khác khung đang nộp "
                             f"({got['video_id']} frame {got['frame_idx']}). "
                             "Hai chỗ lệch nhau là dấu hiệu nên soi lại bằng mắt.")
-                # Nộp đủ 100 dòng vì R@k lấy MAX. Câu trả lời dùng chung cho mọi dòng —
-                # đáp án không phụ thuộc chọn khung nào trong cùng một cảnh.
-                with st.expander("📋 Bảng nộp Q&A — 100 dòng", expanded=False):
-                    rows = qamod.submission_rows(hits, got, limit=100)
-                    txt = "\n".join(f"{v}, {f}, {a}" for v, f, a in rows)
-                    c1, c2 = st.columns([2, 3])
-                    c1.download_button("Tải .csv", txt, file_name="submission_qa.csv",
-                                       mime="text/csv")
-                    c1.caption("Sai câu trả lời là 0 điểm dù đúng khung — kiểm "
-                               "câu trả lời bằng mắt trước khi nộp.")
-                    c2.code(txt[:1500] + ("\n..." if len(txt) > 1500 else ""),
-                            language=None)
                 st.divider()
             st.caption(f"{qa_top} ứng viên đầu — ảnh đầu tiên là khung sẽ nộp")
             show_frames(hits.iloc[:qa_top], cols_per_row, similar=False)
     else:
-        st.info("Nhập mô tả và câu hỏi rồi bấm **Tìm & trả lời**.")
+        st.info("Nhập mô tả rồi bấm **1 · Tìm khung**. Đánh dấu khung đúng cảnh "
+                "trước, rồi mới bấm **2 · Trả lời** — thứ tự này đáng nhiều điểm.")
 
 
 # ═════════════════════════════ TRAKE ═════════════════════════════
@@ -577,46 +654,54 @@ with tab_trake:
         help="Thứ tự dòng CHÍNH LÀ ràng buộc thời gian — hệ thống ép mốc sau phải "
              "nằm sau mốc trước. Đo được: ép thứ tự giảm lệch 828 → 444 frame và "
              "sửa 3/3 chuỗi khỏi bị đảo ngược thời gian.")
-    texts = [s.strip() for s in tk_moments.split("\n") if s.strip()]
+    goc = [s.strip() for s in tk_moments.split("\n") if s.strip()]
 
-    if not texts:
+    tk_dich = st.checkbox(
+        "Dịch từng mốc sang tiếng Anh", value=True, key="tk_dich",
+        help="Đo đầu–cuối 18/08 trên 8 chuỗi: tiếng Việt thô 0,3875 · dịch máy "
+             "0,4000 · tiếng Anh VIẾT TAY 0,4417. Tiếng Việt thô còn mất một video "
+             "ở bước 1 (7/8) — sai video là 0 điểm. Nếu bạn tự gõ được tiếng Anh "
+             "sát hình thì gõ thẳng vào ô trên và TẮT ô này: hơn dịch máy 0,042.")
+
+    if not goc:
         st.info("Nhập các mốc, mỗi dòng một mốc.")
+        texts = []
     else:
-        # ── giai đoạn 1a: khoanh VIDEO ───────────────────────────────────
-        # Chấm bằng TỔNG điểm của đường đi ĐÃ ÉP THỨ TỰ thời gian, không phải
-        # điểm cao nhất của một mốc bất kỳ: luật cũ cho một video thắng chỉ nhờ
-        # tình cờ chứa MỘT khung giống MỘT mốc. Đo được: 4/5 -> 5/5 chuỗi đúng
-        # video, điểm TRAKE đầu-cuối 0.3467 -> 0.3967. Sai video là 0 điểm cho
-        # CẢ chuỗi nên đây là chỗ đáng đầu tư nhất của TRAKE.
+        if tk_dich:
+            with st.spinner("Đang dịch từng mốc ..."):
+                texts = [preprocess_query(t, "google")[0] for t in goc]
+            if texts != goc:
+                st.caption("→ dịch: " + " · ".join(f"*{t}*" for t in texts))
+        else:
+            texts = list(goc)
+
+    if texts:
         import trake as tkmod
         with st.spinner("Đang xếp hạng video theo cả chuỗi ..."):
-            # Dựng ma trận điểm bằng encoder ĐÃ NẠP SẴN của giao diện. Gọi
-            # tkmod.rank_videos(texts) sẽ nạp bản SigLIP2-L thứ hai (~1,7 GB) và
-            # làm cạn bộ nhớ ảo — đã dính thật.
             F = load_features_ram()
             S = np.vstack([F @ encode_text(t)[0] for t in texts])
-            xh = tkmod.rank_videos_scores(S, top_k=10)
-        best = pd.Series(dict(xh))
-        # Ảnh đại diện: khung khớp nhất trong video đó, lấy từ rổ tìm kiếm.
-        pool = pd.concat([search(t, 100, ens_w=ens_w) for t in texts],
-                         ignore_index=True)
-        rep = (pool.sort_values("score", ascending=False)
-                   .drop_duplicates("video_id").set_index("video_id"))
+            xh = tkmod.rank_videos_scores(S, top_k=10, kem_neo=True)
+        meta_tk = load_metadata()
 
         st.subheader("1. Chọn video")
-        st.caption("Xếp theo tổng điểm của chuỗi khi bị ép đúng thứ tự thời gian — "
-                   "video phải chứa được CẢ chuỗi, không chỉ một mốc.")
-        for start in range(0, len(best), cols_per_row):
-            cols = st.columns(cols_per_row)
-            for col, vid in zip(cols, best.index[start:start + cols_per_row]):
+        st.caption(f"Mỗi hàng là MỘT video, bày cả **{len(texts)} mốc** theo đúng "
+                   "thứ tự thời gian — đây chính là bộ mỏ neo hệ thống đã chọn cho "
+                   "video đó. Nhìn cả hàng để biết video có chứa CẢ chuỗi hay chỉ "
+                   "khớp một mốc. Xếp theo tổng điểm của chuỗi.")
+        for vid, diem, hang in xh:
+            st.markdown(f"**{vid}** · điểm chuỗi {diem:.3f}")
+            cols = st.columns(len(texts))
+            for j, (col, row) in enumerate(zip(cols, hang)):
+                r = meta_tk.iloc[row]
                 with col:
-                    # Video do luật mới đưa lên có thể không nằm trong rổ top-100
-                    # của bất kỳ mốc nào, nên rep có thể thiếu nó.
-                    p = rep.loc[vid, "image_path"] if vid in rep.index else ""
+                    p = r["image_path"]
                     if p and Path(p).exists():
                         st.image(p, width="stretch")
-                    st.caption(f"**{vid}** · {best[vid]:.3f}")
-        tk_video = st.selectbox("Video sẽ nộp", list(best.index), key="tk_video")
+                    st.caption(f"mốc {j + 1} · f{int(r['frame_idx'])}"
+                               f"\n\n`{float(S[j, row]):.3f}`")
+            st.divider()
+        tk_video = st.selectbox("Video sẽ nộp", [v for v, _, _ in xh],
+                                key="tk_video")
 
         st.subheader("2. Căn từng mốc trên video gốc")
         st.caption(f"{len(texts)} mốc × ~13 giây mã hoá ≈ **{len(texts) * 13} giây** "
@@ -630,20 +715,17 @@ with tab_trake:
                 st.error(str(exc))
             if moments:
                 ids = [m["frame_idx"] for m in moments]
-                # Ghép theo ID THẬT đọc được, không theo sorted(set(ids)): read_frames bỏ
-                # frame hỏng nên zip sẽ gán nhầm ảnh sang mốc khác.
                 got_ids, imgs = tkmod.read_frames(tk_video, ids)
                 pic = dict(zip(got_ids, imgs))
-                st.code(", ".join(str(x) for x in tkmod.submission_row(tk_video, moments)),
-                        language=None)
+                dong_tk = tkmod.submission_row(tk_video, moments)
+                st.code(", ".join(str(x) for x in dong_tk), language=None)
                 if ids != sorted(ids):
-                    # Không nên xảy ra vì mỏ neo đã bị ép thứ tự, nhưng căn tinh
-                    # còn dịch ±120 frame nên hai mốc sát nhau vẫn có thể chồng lên.
                     st.warning("⚠️ Kết quả KHÔNG tăng dần theo thời gian — hai mốc sát "
                                "nhau có thể đã trùng vùng. Soi lại bằng mắt trước khi nộp.")
                 for start in range(0, len(moments), cols_per_row):
                     cols = st.columns(cols_per_row)
-                    for col, m in zip(cols, moments[start:start + cols_per_row]):
+                    for j, (col, m) in enumerate(
+                            zip(cols, moments[start:start + cols_per_row]), start):
                         with col:
                             im = pic.get(m["frame_idx"])
                             if im is not None:
@@ -651,5 +733,5 @@ with tab_trake:
                             st.caption(f"frame **{m['frame_idx']}** · điểm {m['score']:.3f}"
                                        f"\n\nneo {m['anchor']} "
                                        f"({m['frame_idx'] - m['anchor']:+d})"
-                                       f"\n\n_{m['text']}_")
+                                       f"\n\n_{goc[j]}_")
                 st.caption("Điểm thấp = có thể căn sai; soi kỹ mốc đó trước khi nộp.")

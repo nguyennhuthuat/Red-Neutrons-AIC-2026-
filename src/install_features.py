@@ -1,16 +1,3 @@
-"""Thay bộ vector CLIP đang dùng bằng bộ mới mã hoá từ Kaggle.
-
-    python src/install_features.py --list
-    python src/install_features.py --model ViT-L-16-SigLIP2-512 --apply
-    python src/install_features.py --restore
-
-Cần script riêng vì đổi bộ vector là đổi BA thứ phải khớp nhau — `features.npy`,
-`faiss.index` (dựng lại, không tái dùng), `manifest.json` — và sai một cái thì hệ
-thống vẫn chạy, chỉ trả kết quả rác.
-
-Điểm đã đo của từng model và cơ sở chọn: docs/bao_cao_he_thong.tex, mục
-"Chọn encoder".
-"""
 
 import argparse
 import json
@@ -34,9 +21,6 @@ PRETRAINED = {
     "ViT-gopt-16-SigLIP2-384": "webli",
 }
 
-# ⚠️ L-16-384 và L-16-512 ĐỀU 1024 chiều nên guard số chiều không phân biệt được.
-# Vì vậy install() lưu thêm vân tay `features_head_sha1`; xem kiem_khop().
-
 
 def available():
     out = {}
@@ -54,11 +38,6 @@ def van_tay(p: Path) -> str:
 
 
 def kiem_khop() -> None:
-    """Nổ nếu features.npy đang dùng KHÔNG phải bộ mà manifest khai.
-
-    Rẻ (đọc 1 MB) nên gọi được ở mọi điểm vào. Manifest cũ chưa có vân tay thì
-    bỏ qua — không ép chạy lại install chỉ vì thiếu trường mới.
-    """
     man = doc_manifest()
     mong = man.get("features_head_sha1")
     if not mong:
@@ -74,10 +53,6 @@ def kiem_khop() -> None:
 
 
 def doc_manifest() -> dict:
-    """manifest hiện có, hoặc dict rỗng nếu máy này chưa cài bộ nào.
-
-    Chưa có là bình thường chứ không phải lỗi — máy mới clone về thì chưa có.
-    """
     p = DST / "manifest.json"
     return json.loads(p.read_text(encoding="utf-8")) if p.exists() else {}
 
