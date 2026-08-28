@@ -2,7 +2,7 @@
 .venv
 venv/ 
 
-data/
+
 *.npy
 *.mp4 
 *.avi 
@@ -26,6 +26,8 @@ __pycache__/
 .DS_Store
 Thumbs.db
 
+/.tmp_do
+
 # Kaggle
 kaggle.json
 .kaggle/
@@ -38,3 +40,8 @@ CLAUDE.md
 \.cache
 
 docs/
+dethi/
+submission/
+
+/data
+data/

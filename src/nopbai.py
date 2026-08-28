@@ -9,7 +9,8 @@ import zipfile
 MAX_DONG = 100
 MAX_KY_TU_DAP_AN = 100
 DANG = ("kis", "qa", "trake")
-TEN_HOP_LE = re.compile(r"^query-\d+-(kis|qa|trake)$")
+# Tên gói thật của BTC có tiền tố đợt: query-p1-16-trake, không chỉ query-16-trake.
+TEN_HOP_LE = re.compile(r"^query-[0-9A-Za-z]+(?:-[0-9A-Za-z]+)*-(kis|qa|trake)$")
 
 
 def _boc(s) -> str:
@@ -36,8 +37,9 @@ def dong_qa(video_id: str, frame_idx, answer: str) -> str:
 
 def dong_trake(video_id: str, frames) -> str:
     f = [int(x) for x in frames]
-    if f != sorted(f):
-        raise ValueError(f"mốc TRAKE không tăng dần: {f}")
+    if any(b <= a for a, b in zip(f, f[1:])):
+        raise ValueError(f"mốc TRAKE phải tăng NGẶT (hai sự kiện khác nhau "
+                         f"không thể cùng một khung): {f}")
     return ",".join([str(video_id)] + [str(x) for x in f])
 
 
@@ -77,6 +79,9 @@ def kiem_tep(ten: str, dong: list[str]) -> list[str]:
             loi.append(f"{ten} dòng {i}: có khoảng trắng thừa đầu/cuối trường "
                        f"(thể lệ KHÔNG tự trim) — {d[:40]}")
 
+        if dang is None:                  # chưa biết dạng thì thôi soi kiểu
+            continue
+
         # Số trường trước, kiểu dữ liệu sau: sai số trường mới là nguyên nhân,
         # "frame không phải số nguyên" chỉ là hệ quả và đọc dễ lạc hướng.
         if dang == "kis" and len(truong) != 2:
@@ -100,9 +105,9 @@ def kiem_tep(ten: str, dong: list[str]) -> list[str]:
                 loi.append(f"{ten} dòng {i}: đáp án {len(truong[2])} ký tự, "
                            f"vượt trần {MAX_KY_TU_DAP_AN}")
         elif dang == "trake":
-            moc = truong[1:]
-            if moc != sorted(moc, key=int):
-                loi.append(f"{ten} dòng {i}: mốc TRAKE không tăng dần — {d[:40]}")
+            moc = [int(t) for t in truong[1:]]
+            if any(b <= a for a, b in zip(moc, moc[1:])):
+                loi.append(f"{ten} dòng {i}: mốc TRAKE phải tăng NGẶT — {d[:40]}")
 
     # Mọi dòng TRAKE là ứng viên của CÙNG một chuỗi nên phải cùng số mốc.
     if dang == "trake" and len(so_truong) > 1:

@@ -8,6 +8,10 @@ streamlit>=1.30.0
 
 opencv-python>=4.8.0
 
+# OCR chạy CPU cho khâu trả lời Q&A. Chỉ quét ĐÚNG khung đã chốt:
+# 2,8 s/khung, cả corpus 177k khung là 140 giờ một luồng.
+rapidocr-onnxruntime>=1.3.0
+
 # google-genai là SDK còn được hỗ trợ. KHÔNG thêm lại google-generativeai:
 # nó đã ngừng phát triển và cài cả hai dễ va nhau ở không gian tên `google`.
 google-genai>=1.0.0

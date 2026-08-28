@@ -449,6 +449,60 @@ with st.sidebar:
                      "· 1.0→0.8025.")
 
     st.divider()
+    with st.expander("🍳 Tra bảng nguyên liệu (nấu ăn)"):
+        import ocr_thecuoi as tcmod
+        _tc = tcmod.bang()
+        if _tc is None:
+            st.caption("Chưa lập chỉ mục. Chạy `python src/ocr_thecuoi.py` "
+                       "(~23 phút) để quét thẻ tóm tắt cuối mỗi video L26.")
+        else:
+            st.caption(f"{len(_tc)} thẻ. Gõ tên nguyên liệu — không cần dấu, "
+                       f"máy OCR cũng không có dấu.")
+            _q = st.text_input("nguyên liệu", key="tc_q",
+                               placeholder="vd: thit bo bam, giam gao, ot sung")
+            if _q.strip():
+                _kq = tcmod.tim(_q, limit=8)
+                if not len(_kq):
+                    st.info("Không thẻ nào chứa từ này.")
+                for _r in _kq.itertuples():
+                    st.write(f"**{_r.video_id}** · frame {_r.frame_idx} "
+                             f"· điểm {_r.diem}")
+
+    with st.expander("🔤 Tra chữ trên khung"):
+        import ocr_chu as ocmod
+        _oc = ocmod.bang()
+        if _oc is None:
+            st.caption("Chưa lập chỉ mục. Chạy `python src/ocr_chu.py --nhom "
+                       "L22 L21 L25 L23` — bốn nhóm đặc chữ nhất, ~7 giờ.")
+        else:
+            _nh = sorted(_oc.video_id.str[:3].unique())
+            st.caption(f"{len(_oc):,} khung · nhóm {' '.join(_nh)}. Gõ chữ bạn "
+                       f"đoán CÓ TRÊN MÀN HÌNH, không phải mô tả cảnh — gõ mô "
+                       f"tả thì kênh này thua hẳn CLIP.")
+            _qc = st.text_input("chữ trên khung", key="oc_q",
+                                placeholder="vd: chang 4, 1.1 km, bo giao duc")
+            if _qc.strip():
+                _kc = ocmod.tim(_qc, limit=6)
+                if not len(_kc):
+                    st.info("Không khung nào chứa từ này.")
+                _m = load_metadata()
+                _hang = {(v, int(n)): i for i, (v, n)
+                         in enumerate(zip(_m.video_id, _m.n))}
+                for _r in _kc.itertuples():
+                    _i = _hang.get((_r.video_id, int(_r.n)))
+                    st.write(f"**{_r.video_id}** · frame {_r.frame_idx} "
+                             f"· điểm {_r.diem}")
+                    if _i is not None:
+                        st.image(_m.image_path.iat[_i], width="stretch")
+                        # Nối vào đúng cơ chế tìm-ảnh-giống của tab KIS: một
+                        # khung đọc được chữ mới là đầu mối, không phải đáp án.
+                        if st.button("🔍 Tìm ảnh giống", key=f"oc_seed_{_i}",
+                                     width="stretch"):
+                            st.session_state["seed_row"] = int(_i)
+                            st.rerun()
+                    st.caption(_r.text.replace(chr(10), " · ")[:150])
+
+    st.divider()
     st.subheader(f"📦 Kho bài nộp ({len(kho())})")
     if not kho():
         st.caption("Trống. Tìm xong ở mỗi tab thì bấm **Lưu vào kho** — mỗi câu "
@@ -631,6 +685,21 @@ with tab_qa:
         placeholder="vd: đàn chim trong ảnh là loài gì?")
     qa_top = st.select_slider("Số ảnh đưa cho VLM xem", options=[10, 20, 30, 50],
                               value=20, key="qa_top")
+    qa_kieu = st.radio(
+        "Kiểu câu hỏi", ["nhận dạng", "đếm"], horizontal=True, key="qa_kieu",
+        help="Chế độ đếm hỏi CẢ toàn khung LẪN từng ô rời, rồi chọn theo độ "
+             "lớn: ít vật thì tin toàn khung (4/4), nhiều ký hiệu nhỏ thì cộng "
+             "ô. Hai con số lệch nhau thì nó báo, đừng bỏ qua cảnh báo đó — "
+             "vài chục ký hiệu nhỏ là chỗ VLM đếm mỗi lần một khác.")
+    # Đo được: cùng một khung hỏi 5 lần ra 2, 3, 1, 1, 11. Chạy lại vài lần rồi
+    # nhìn CẢ PHỔ là tín hiệu tin cậy duy nhất có thật cho câu đếm — khác hẳn
+    # confidence do mô hình tự khai, thứ đã đo được là vô dụng.
+    qa_lan = 1
+    if qa_kieu == "đếm":
+        qa_lan = st.select_slider(
+            "Đếm lại mấy lần (bước 3)", options=[1, 3, 5], value=3, key="qa_lan",
+            help="Mỗi lần đếm tốn 7 lời gọi API. Ba lần ra ba số khác nhau "
+                 "nghĩa là đừng tin số nào cả — hãy tự đếm bằng mắt.")
 
     qa_marked = st.session_state.get("marked", [])
     if qa_marked:
@@ -656,6 +725,9 @@ with tab_qa:
         st.session_state["qa_desc_truoc"] = qa_desc
         st.session_state["qa_da_tim"] = False
         st.session_state.pop("qa_got", None)      # đáp án cũ thuộc rổ cũ
+        st.session_state.pop("qa_ky", None)
+        st.session_state.pop("qa_ocr", None)
+        st.session_state.pop("qa_asr_dap", None)
 
     if st.session_state.get("qa_da_tim"):
         if not qa_desc.strip():
@@ -687,8 +759,27 @@ with tab_qa:
                     if Path(got["image_path"]).exists():
                         st.image(got["image_path"], width="stretch")
                 with c2:
-                    st.subheader(got["answer"] or "(VLM không trả lời được)")
-                    st.caption(f"mức chắc chắn {got['confidence']:.0f}/10 · {got['reason']}")
+                    if got["answer"]:
+                        st.subheader(got["answer"])
+                    else:
+                        # Im lặng KHÔNG phải lỗi API. Rổ đã kèm lời nói của
+                        # từng ảnh, nên im lặng nghĩa là đáp án không có trong
+                        # ảnh LẪN lời nói của cả 20 khung — hầu như luôn vì rổ
+                        # chưa chứa khung đúng (đo được: 7/20 câu tên riêng).
+                        st.subheader("Chưa đủ bằng chứng để trả lời")
+                        st.info("Rổ này đã gồm cả **ảnh** lẫn **lời thuyết minh** "
+                                "của 20 khung, nên im lặng nghĩa là khung đáp án "
+                                "chưa nằm trong rổ. Sửa **mô tả sự kiện** rồi tìm "
+                                "lại, hoặc tích OK vài khung đúng cảnh để đẩy rổ "
+                                "— đừng hỏi lại nguyên văn, kết quả sẽ y hệt.")
+                    # confidence do VLM TỰ KHAI: đo được 10/10 ở một câu
+                    # bịa hẳn đáp án, 0/10 ở câu mà đáp án nằm ngay hạng 1.
+                    # Bày kèm cảnh báo, tuyệt đối không dùng để lọc.
+                    st.caption(f"kênh **{got.get('kenh', 'chỉ ảnh')}** · "
+                               f"{got['reason']}")
+                    st.caption(f":gray[mô hình tự khai {got['confidence']:.0f}/10 "
+                               f"— con số này KHÔNG đáng tin, đã đo: 10/10 ở một "
+                               f"câu bịa hẳn đáp án. Đừng dùng nó để quyết định.]")
                     st.code(f"{got['video_id']}, {got['frame_idx']}, {got['answer']}",
                             language=None)
                     if got["vlm_frame_idx"] != got["frame_idx"]:
@@ -697,6 +788,79 @@ with tab_qa:
                             f"{got['vlm_frame_idx']}, khác khung đang nộp "
                             f"({got['video_id']} frame {got['frame_idx']}). "
                             "Hai chỗ lệch nhau là dấu hiệu nên soi lại bằng mắt.")
+
+                # Bước 3 — đọc lại ĐÚNG một khung ở độ phân giải gốc. Khung
+                # 1280x720 gửi ở 512px chỉ còn 512x288, số trên biển báo mất hẳn.
+                v_dung = got["vlm_video_id"] or got["video_id"]
+                f_dung = got["vlm_frame_idx"] or got["frame_idx"]
+                kh = hits[(hits.video_id == v_dung) & (hits.frame_idx == f_dung)]
+                p_anh = (str(kh.iloc[0]["image_path"]) if len(kh)
+                         else got["image_path"])
+
+                loi_noi = qamod.asr_khung(v_dung, f_dung)
+                if loi_noi:
+                    with st.expander("🎙️ Lời nói quanh khung này (miễn phí)"):
+                        st.write(loi_noi)
+                        # Câu hỏi TÊN thì kênh này một mình đã 0,950, mà chỉ tốn
+                        # một lời gọi — không việc gì bắt chờ đủ 9 góc nhìn.
+                        if st.button("Hỏi thẳng lời nói (1 lời gọi, ~5 giây)",
+                                     key="qa_hoi_asr"):
+                            with st.spinner("Đang đọc lời nói ..."):
+                                st.session_state["qa_asr_dap"] = (qamod._hoi_mot(
+                                    qamod.PROMPT_ASR.format(
+                                        asr=loi_noi[:2000],
+                                        question=qa_ques.strip()), None) or {})
+                        da = st.session_state.get("qa_asr_dap")
+                        if da is not None:
+                            st.success(f"Lời nói trả lời: "
+                                       f"**{da.get('answer') or '(không nói tới)'}**")
+                            st.caption("Hỏi TÊN (đèo, cầu, trường, giải đấu) thì "
+                                       "tin kênh này: 0,950 so với 0,100 của kênh "
+                                       "ảnh trên bộ đo 20 câu tên riêng.")
+                # OCR mất ~3 giây nên chỉ quét khi người thi mở ra xem.
+                with st.expander("🔤 Chữ OCR đọc được trong khung (~3 giây)"):
+                    if st.button("Quét chữ", key="qa_ocr_nut"):
+                        with st.spinner("Đang quét chữ ..."):
+                            st.session_state["qa_ocr"] = (
+                                qamod.ocr_khung(p_anh) or "(không thấy chữ nào)")
+                    if st.session_state.get("qa_ocr"):
+                        st.text(st.session_state["qa_ocr"])
+                        st.caption("Máy OCR không có dấu tiếng Việt và hay lẫn "
+                                   "8/B, 0/O — bước 3 tự khôi phục lại dấu.")
+
+                nhan3 = ("3 · Đếm bằng cách chia ô rồi CỘNG" if qa_kieu == "đếm"
+                         else "3 · Đọc kỹ khung này (ô phóng to + lời nói + OCR)")
+                if st.button(nhan3, key="qa_docky"):
+                    with st.spinner("Đang soi từng ô ..."):
+                        if qa_kieu == "đếm":
+                            # Ba lần chứ không một lần: đo được cùng một khung
+                            # hỏi 5 lần ra 4 đáp án khác nhau.
+                            st.session_state["qa_ky"] = qamod.dem_lap(
+                                qa_ques.strip(), p_anh, desc=qa_desc.strip(),
+                                lan=qa_lan)
+                        else:
+                            st.session_state["qa_ky"] = qamod.doc_ky(
+                                qa_ques.strip(), p_anh, desc=qa_desc.strip(),
+                                asr=loi_noi)
+                ky = st.session_state.get("qa_ky")
+                if ky:
+                    st.success(f"Đọc kỹ: **{ky['answer']}** — {ky['reason']}")
+                    if "count_toan" in ky:
+                        st.caption(f"toàn khung đếm {ky['count_toan']} · "
+                                   f"cộng ô đếm {ky['count_cong']}")
+                    if ky.get("cac_lan") and not ky.get("on_dinh", True):
+                        st.warning(
+                            f"⚠ {len(ky['cac_lan'])} lần chạy ra {ky['cac_lan']}"
+                            f" — **con số này là rút thăm**. Tự đếm bằng mắt "
+                            f"trước khi nộp.")
+                    elif ky.get("cac_lan"):
+                        st.caption(f"{len(ky['cac_lan'])} lần chạy đều ra "
+                                   f"{ky['count']} — đồng thuận.")
+                    st.code(f"{v_dung}, {f_dung}, {ky['answer']}", language=None)
+                    st.caption("Dòng trên là bản của bước 3. Muốn nộp nó thì sửa "
+                               "trong tab 📦 Nộp bài — kho vẫn đang giữ bản bước 2.")
+                    with st.expander("từng góc nhìn"):
+                        st.table(ky.get("views", []))
 
                 # Cả 100 dòng dùng CHUNG câu trả lời: quy chế chấm đáp án của
                 # dòng trúng, nên đáp án sai là 0 dù khung đúng.
@@ -752,6 +916,13 @@ with tab_trake:
 
     if texts:
         import trake as tkmod
+        # Đổi mô tả mốc là mọi kết quả căn cũ thành rác — dọn, đừng để lẫn vào
+        # 100 dòng nộp của câu mới.
+        if st.session_state.get("tk_kho_texts") != texts:
+            st.session_state["tk_kho_texts"] = list(texts)
+            st.session_state["tk_kho"] = {}
+            st.session_state.pop("tk_kq", None)
+            st.session_state.pop("tk_kq_video", None)
         with st.spinner("Đang xếp hạng video theo cả chuỗi ..."):
             F = load_features_ram()
             S = np.vstack([F @ encode_text(t)[0] for t in texts])
@@ -785,8 +956,12 @@ with tab_trake:
             try:
                 with st.spinner(f"Đang căn {len(texts)} mốc trên {tk_video} ..."):
                     # Giữ lại qua các lần chạy lại: căn một chuỗi tốn hàng chục giây.
-                    st.session_state["tk_kq"] = tkmod.locate_sequence(tk_video, texts)
+                    kq = tkmod.locate_sequence(tk_video, texts)
+                    st.session_state["tk_kq"] = kq
                     st.session_state["tk_kq_video"] = tk_video
+                    # Căn thêm video khác thì CỘNG vào, không đè: mỗi video góp
+                    # thêm dòng dự phòng cho đủ 100.
+                    st.session_state.setdefault("tk_kho", {})[tk_video] = kq
             except FileNotFoundError as exc:
                 st.error(str(exc))
         moments = st.session_state.get("tk_kq")
@@ -817,10 +992,28 @@ with tab_trake:
                                    f"\n\n_{goc[j]}_")
             st.caption("Điểm thấp = có thể căn sai; soi kỹ mốc đó trước khi nộp.")
 
-            # Thể lệ cho tối đa 100 dòng cho CẢ TRAKE, nhưng chưa rõ cách chấm
-            # nhiều dòng nên tạm nộp đúng một chuỗi.
-            o_luu("query-3-trake", "trake",
-                  lambda: [nopbai.dong_trake(dong_tk[0], dong_tk[1:])])
+            # Thể lệ cho TRAKE tối đa 100 dòng y như KIS, và ví dụ trong thể lệ
+            # có sẵn nhiều dòng cùng một video lệch nhau vài frame.
+            xep = [v for v, _, _ in xh]
+            tk_kho = st.session_state.get("tk_kho", {})
+            da_can = sorted(tk_kho, key=lambda v: xep.index(v) if v in xep else 99)
+            # Video đang xem đứng đầu, các video đã căn khác nối sau.
+            da_can = [tk_video] + [v for v in da_can if v != tk_video]
+            cap = [(v, tk_kho[v]) for v in da_can if v in tk_kho]
+            dong_nop = [nopbai.dong_trake(v, f)
+                        for v, *f in tkmod.submission_rows(cap, limit=100)]
+
+            st.markdown(f"**Sẽ nộp {len(dong_nop)} dòng** "
+                        f"từ {len(cap)} video đã căn.")
+            st.caption(
+                "Dòng 1 là chuỗi trên. Các dòng sau lấy từ **chính bảng điểm** "
+                "hệ thống đã tính khi căn (~37 khung mỗi mốc) nên KHÔNG tốn thêm "
+                "một lần mã hoá nào, và thể lệ không phạt dòng sai. Muốn thêm "
+                "video dự phòng: đổi ô *Video sẽ nộp* rồi bấm **Căn chuỗi** lần "
+                "nữa — kết quả cũ vẫn được giữ.")
+            with st.expander(f"Soi {len(dong_nop)} dòng"):
+                st.code("\n".join(dong_nop), language=None)
+            o_luu("query-3-trake", "trake", lambda: dong_nop)
 
 
 # ═════════════════════════════ NỘP BÀI ═════════════════════════════

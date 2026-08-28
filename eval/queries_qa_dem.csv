@@ -1,0 +1,5 @@
+query_id,text_vi,question_vi,answer,kind,video_id,n,frame_idx,frame_idx_min,frame_idx_max,src_query,scene_kf,nguon
+q16,Một con robot màu xanh quân đội đứng trên nền đất phủ lá khô trong rừng,Con robot này di chuyển bằng mấy chân?,bốn,đếm,L22_V009,198,18459,17721,18655,a07,15,tach_tu_bo_50
+q28,"Bốn thanh niên bị che mặt đứng cạnh mấy chiếc xe máy, hai bên là công an mặc quân phục xanh lá",Có mấy công an đứng hai bên nhóm thanh niên?,hai người,đếm,L22_V024,209,21639,21639,22148,a10,6,tach_tu_bo_50
+q30,Cận cảnh đầu lân màu trắng viền đen và vàng đang biểu diễn trước phông nền tím hồng,Phía trước đầu lân có mấy quả cầu đỏ?,hai quả,đếm,L24_V016,38,3472,2272,4491,a15,25,tach_tu_bo_50
+q32,"Bàn tay cầm chảo rưới sốt chua ngọt màu cam lên đĩa sứ xanh lá đậm, bên cạnh là một chén nước sốt nhỏ",Trên đĩa có mấy miếng cà chua bi?,bốn miếng,đếm,L26_V412,143,6144,6039,6151,a25,3,tach_tu_bo_50

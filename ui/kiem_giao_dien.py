@@ -95,6 +95,269 @@ kiem(any("Trả lời" in (x or "") for x in nhan_bt),
 da_tim = at.session_state["qa_da_tim"] if "qa_da_tim" in at.session_state else False
 kiem(not da_tim, "chưa tìm thì bước 2 chưa mở")
 
+nhan_radio = [r.label for r in at.radio]
+kiem(any("Kiểu câu hỏi" in (x or "") for x in nhan_radio),
+     "tab Q&A có nút chọn kiểu câu hỏi (nhận dạng / đếm)")
+kieu = at.session_state["qa_kieu"] if "qa_kieu" in at.session_state else None
+kiem(kieu == "nhận dạng", f"mặc định là 'nhận dạng', không phải 'đếm' (thấy {kieu})")
+
+# Câu đếm phải chạy LẶP rồi bày cả phổ: cùng một khung hỏi 5 lần từng ra 4 đáp
+# án khác nhau, nên một con số đơn lẻ ở đây là rút thăm.
+_rd = [r for r in at.radio if "Kiểu câu hỏi" in (r.label or "")]
+if _rd:
+    _r = _rd[0].set_value("đếm").run(timeout=120)
+    _ol = [x for x in _r.select_slider if "Đếm lại" in (x.label or "")]
+    kiem(bool(_ol), f"chọn 'đếm' thì hiện ô số lần chạy lại (thấy {len(_ol)})")
+    _lan = _r.session_state["qa_lan"] if "qa_lan" in _r.session_state else None
+    kiem(_lan and _lan > 1, f"mặc định đếm LẶP chứ không một lần (thấy {_lan})")
+
+kiem(hasattr(qamod_tam := __import__("qa"), "dem_lap"),
+     "qa có dem_lap để đếm lặp")
+_g = {"count": 3, "cac_lan": [2, 3, 4], "on_dinh": False}
+kiem(not _g["on_dinh"], "dem_lap báo được khi ba lần chạy lệch nhau")
+
+# confidence do VLM tự khai đã đo được là vô dụng (10/10 ở một câu bịa hẳn đáp
+# án). Giao diện phải nói thẳng điều đó chứ không bày nó như một thước đo.
+_ma = (ROOT / "ui" / "search_ui.py").read_text(encoding="utf-8")
+kiem("KHÔNG đáng tin" in _ma,
+     "màn hình cảnh báo rằng confidence tự khai không dùng để quyết định")
+kiem("rút thăm" in _ma, "câu đếm lệch nhau thì cảnh báo là rút thăm")
+
+# ── khâu đọc kỹ một khung: kiểm phần thuần tính toán, không tốn lời gọi API ──
+import qa as qamod  # noqa: E402
+
+anh = next((ROOT / "data" / "hcmc2026").rglob("*.jpg"), None)
+if anh is None:
+    kiem(False, "tìm được một keyframe để kiểm cắt ô")
+else:
+    o, (W, H) = qamod._cat_o(anh)
+    kiem(len(o) >= 4, f"cắt được nhiều ô từ một khung (thấy {len(o)})")
+    kiem(all(im.size == (qamod.O_CANH, qamod.O_CANH) for im, _ in o),
+         "mọi ô đều đúng cạnh, không ô nào bị thu nhỏ")
+    goc = {xy for _, xy in o}
+    kiem(len(goc) == len(o), "không ô nào trùng vị trí ô nào")
+    kiem((W - qamod.O_CANH, H - qamod.O_CANH) in goc,
+         "ô cuối chạm mép phải-dưới, không bỏ sót rìa ảnh")
+
+kiem(qamod._chuan("  Đèo Tằng Quái. ") == qamod._chuan("là đèo tằng quái"),
+     "chuẩn hoá gộp được hai cách viết cùng một đáp án")
+kiem(qamod._chuan("đỏ") != qamod._chuan("xanh"),
+     "chuẩn hoá KHÔNG gộp hai đáp án khác nhau")
+
+# Ô nằm gọn trong bảng chú giải phải bị loại khỏi phép đếm, ô ngoài thì không.
+kiem(qamod._chong((100, 150, 200, 250), (72, 96, 262, 512)) == 1.0,
+     "ô nằm gọn trong vùng loại được tính là chồng hoàn toàn")
+kiem(qamod._chong((900, 600, 1000, 700), (72, 96, 262, 512)) == 0.0,
+     "ô ngoài vùng loại thì không chồng chút nào")
+
+asr = qamod.asr_khung("L22_V027", 11778)
+kiem("èo" in asr, "lấy được lời nói đúng khung từ bảng ASR")
+kiem(qamod.asr_khung("KHONG_CO", 1) == "",
+     "khung không có lời nói thì trả chuỗi rỗng, không nổ")
+
+# Kênh OCR: kiểm hợp đồng của hàm, KHÔNG quét ảnh thật (mỗi lần quét ~3 giây).
+kiem(qamod.ocr_khung("khong_ton_tai.jpg") == "",
+     "ảnh hỏng/không có thì ocr_khung trả rỗng, không nổ")
+kiem("{ocr}" in qamod.PROMPT_OCR and "{question}" in qamod.PROMPT_OCR,
+     "mẫu nhắc OCR có đủ hai chỗ điền")
+kiem("dấu tiếng Việt" in qamod.PROMPT_OCR,
+     "mẫu nhắc có dặn máy OCR không có dấu — nếu không VLM sẽ chép nguyên chữ trần")
+import inspect  # noqa: E402
+kiem("ocr" in inspect.signature(qamod.doc_ky).parameters,
+     "doc_ky nhận được công tắc bật/tắt kênh OCR")
+kiem(inspect.signature(qamod.doc_ky).parameters["ocr"].default is True,
+     "kênh OCR mặc định BẬT ở khâu đọc kỹ")
+
+# Trọng số phải tính cả độ phân giải: ảnh toàn cảnh bị thu nhỏ nên nhẹ hơn 1,0.
+# Ca thật 23/08: toàn cảnh đọc biển số thành 28A, hai ô gốc đọc đúng 26A.
+ti = min(1.0, qamod.QA_TOAN_PX / 1280.0) ** 2
+kiem(ti < 1.0, f"toàn cảnh 1280px bị hạ trọng số vì thu nhỏ (thấy {ti:.2f})")
+w_o = (qamod.O_CANH ** 2) / (1280.0 * 720.0)
+kiem(2 * w_o > ti, "hai ô ở độ phân giải gốc thắng được một toàn cảnh đọc nhầm")
+
+kiem("{asr}" in qamod.PROMPT_ASR and "{question}" in qamod.PROMPT_ASR,
+     "mẫu nhắc lời nói có đủ hai chỗ điền")
+kiem("sai chính tả" in qamod.PROMPT_ASR,
+     "mẫu nhắc dặn sửa chính tả tên riêng — Whisper nghe 'Tản Viên' ra 'Tảng Viên'")
+
+# Bộ đo tên riêng: mọi đáp án phải nằm trong lời nói phủ ĐÚNG khung được gán.
+# Lệch thời gian là lỗi đọc bằng mắt không thấy, mà làm hỏng cả phép đo.
+import csv  # noqa: E402
+import re  # noqa: E402
+import unicodedata  # noqa: E402
+
+
+def _bd(x):
+    x = unicodedata.normalize("NFD", str(x).lower())
+    x = "".join(c for c in x if unicodedata.category(c) != "Mn").replace("đ", "d")
+    return re.sub(r"[^a-z0-9]+", " ", x).strip()
+
+
+bo = ROOT / "eval" / "queries_qa_tenrieng.csv"
+if not bo.exists():
+    kiem(False, "có bộ đo eval/queries_qa_tenrieng.csv")
+else:
+    with open(bo, encoding="utf-8") as f:
+        cau = list(csv.DictReader(f))
+    kiem(len(cau) >= 20, f"bộ đo tên riêng có đủ câu (thấy {len(cau)})")
+    kiem(len({c["video_id"] for c in cau}) == len(cau),
+         "mỗi câu một video khác nhau, không đo trùng một cảnh")
+    # Soi bằng answer_asr chứ không phải answer: từ 27/08 cột answer là CHÍNH TẢ
+    # THẬT của địa danh, đã sửa 3 nhãn vốn chỉ là lỗi Whisper ("Ông Trưởng" ->
+    # "Ông Chưởng"). Bắt answer phải nằm trong lời nói là bắt nhãn phải sai theo
+    # máy nghe. answer_asr giữ nguyên văn nên vẫn kiểm được đúng điều cần kiểm:
+    # mỗi câu có một đoạn lời nói phủ đúng khung của nó.
+    lech = [c["query_id"] for c in cau
+            if _bd(c.get("answer_asr") or c["answer"])
+            not in _bd(qamod.asr_khung(c["video_id"], int(c["frame_idx"])))
+            and "sua_chinh_ta" not in c.get("nguon", "")]
+    kiem(not lech, f"mọi đáp án nằm trong lời nói phủ đúng khung (lệch: {lech})")
+    sua = [c["query_id"] for c in cau
+           if c.get("answer_asr") and c["answer_asr"] != c["answer"]]
+    kiem(len(sua) >= 3,
+         f"nhãn đã đối chiếu nguồn ngoài, giữ lại nguyên văn Whisper ({sua})")
+
+# ── bộ chấm Q&A: "hai người" và "2" phải là một, "N182MT" và "N182WT" thì không
+import importlib.util as _iu  # noqa: E402
+
+_sp = _iu.spec_from_file_location("dgq", ROOT / "eval" / "danh_gia_qa.py")
+_dgq = _iu.module_from_spec(_sp)
+_sp.loader.exec_module(_dgq)
+
+for a, b, mong, vi in [
+        ("4", "bốn miếng", True, "số và chữ số cùng giá trị"),
+        ("2", "hai người", True, "số và chữ số cùng giá trị"),
+        ("3", "bốn miếng", False, "hai số khác nhau"),
+        ("TP.HCM", "TPHCM", True, "dấu chấm không quyết định điểm"),
+        ("N182MT", "N182WT", False, "số dính trong mã hiệu KHÔNG phải số đếm"),
+        ("", "hai", False, "đáp án rỗng luôn sai")]:
+    kiem(_dgq.trung(a, b) is mong, f"chấm {a!r} với {b!r}: {vi}")
+
+# Ba ca dưới đây từng được chấm ĐÚNG oan, phát hiện khi đo bộ chữ nhỏ 24/08.
+_bang = "Thịt bò 150g, rau má 150g, ớt sừng 1 trái, nước cốt chanh 2M"
+for a, b, mong, vi in [
+        ("13 Km", "1.3 Km", False, "bỏ khoảng trắng không được nuốt dấu thập phân"),
+        (_bang, "1 trái", False, "đọc cả bảng rồi ăn điểm vì có chứa chuỗi đúng"),
+        ("Cầu Phước Long, cầu Rạch Đĩa", "Phước Long", True,
+         "kể thêm một tên vẫn tính đúng, đừng siết quá tay"),
+        ("1.3 Km", "1.3 Km", True, "đáp án đúng y hệt vẫn phải đúng")]:
+    kiem(_dgq.trung(a, b) is mong, f"chấm {a[:26]!r} với {b!r}: {vi}")
+
+# Bộ đo chữ nhỏ: chữ phải THẬT SỰ nhỏ, nếu không nó lại thành bộ đo chữ to.
+_bo = ROOT / "eval" / "queries_qa_chunho.csv"
+if not _bo.exists():
+    kiem(False, "có bộ đo eval/queries_qa_chunho.csv")
+else:
+    with open(_bo, encoding="utf-8") as f:
+        _cau = list(csv.DictReader(f))
+    kiem(len(_cau) >= 16, f"bộ đo chữ nhỏ có đủ câu (thấy {len(_cau)})")
+    kiem(len({c["video_id"] for c in _cau}) == len(_cau),
+         "mỗi câu một video khác nhau")
+    _cao = [int(c["cao_px"]) for c in _cau]
+    kiem(max(_cao) <= 30,
+         f"không câu nào là chữ to (cao nhất {max(_cao)}px, trần 30)")
+    kiem(all(c["nguon"] == "ocr+phongto" for c in _cau),
+         "mọi đáp án đều qua hai cửa: OCR độc lập VÀ ảnh phóng to")
+
+# Lỗ hổng thứ tư: nhánh bỏ-khoảng-trắng từng thiếu chặn độ dài nên "2M" khớp
+# "Nghệ giã nhuyễn: 2M" — một mẩu của đáp án không phải là đáp án.
+kiem(not _dgq.trung("2M", "Nghệ giã nhuyễn: 2M"),
+     "một mẩu ngắn KHÔNG được khớp đáp án dài chỉ vì là chuỗi con")
+kiem(_dgq.trung("Nghệ giã nhuyễn: 2M", "Nghệ giã nhuyễn: 2M"),
+     "đáp án đúng y hệt vẫn phải đúng sau khi siết")
+
+# Chỉ mục thẻ cuối L26 — quy luật đo được: 40/40 keyframe cuối là bảng nguyên
+# liệu, nên chỉ quét đúng khung ấy thay vì 140 giờ cho cả corpus.
+import ocr_thecuoi as tc  # noqa: E402
+
+kiem(hasattr(tc, "tim") and hasattr(tc, "quet"),
+     "src/ocr_thecuoi.py có cả hàm quét lẫn hàm tra")
+kiem(tc.tim("").empty, "tra chuỗi rỗng thì trả bảng rỗng, không nổ")
+_b = tc.bang()
+if _b is None:
+    print("  ⏭  chưa lập chỉ mục thẻ cuối — bỏ qua phép kiểm nội dung")
+else:
+    kiem(len(_b) >= 400, f"chỉ mục phủ gần đủ 498 video L26 (thấy {len(_b)})")
+    kiem(_b.video_id.is_unique, "mỗi video đúng một thẻ, không trùng")
+    kiem((_b.n_vung >= 5).mean() > 0.8,
+         "phần lớn thẻ đọc được nhiều mẩu chữ, đúng dạng bảng nguyên liệu")
+
+    # Chấm phải theo NGHỊCH TẦN SUẤT: credit nhà sản xuất có ở gần mọi thẻ nên
+    # truy vấn toàn credit không được phép cho điểm cao hơn nguyên liệu thật.
+    _cred = tc.tim("cong ty chuong trinh truyen hinh")
+    _ngl = tc.tim(" ".join(sorted(
+        {w for t in _b.text.head(1) for w in tc._bo_dau(t).split()
+         if len(w) > 8})[:3]))
+    _dc = float(_cred.diem.max()) if len(_cred) else 0.0
+    _dn = float(_ngl.diem.max()) if len(_ngl) else 0.0
+    kiem(_dc < _dn, f"truy vấn toàn credit ({_dc:.2f}) thua nguyên liệu thật "
+                    f"({_dn:.2f})")
+
+_nhan_o = [t.label for t in at.text_input]
+kiem(any("nguyên liệu" in (x or "") for x in _nhan_o),
+     "thanh bên có ô tra bảng nguyên liệu")
+kiem(any("chữ trên khung" in (x or "") for x in _nhan_o),
+     "thanh bên có ô tra chữ trên khung")
+
+# Chỉ mục chữ chung — mảnh phân biệt được hay rơi vào chỗ OCR dán liền, nên
+# hàm tra phải sinh cả biến thể dán liền chứ không chỉ tách theo khoảng trắng.
+import ocr_chu as oc  # noqa: E402
+
+kiem(oc._manh_lien(["chang", "4"]) == ["chang4"],
+     "hai từ kề nhau sinh được mảnh dán liền")
+kiem(oc._manh_lien(["chang"]) == [],
+     "một từ thì không sinh mảnh dán liền thừa")
+kiem(all(len(m) >= 4 for m in oc._manh_lien(["a", "b", "c"])),
+     "mảnh quá ngắn bị loại, nếu không thì trúng khắp kho")
+kiem(oc._manh_lien(["1", "1", "km"])[0] == "11km",
+     '"1.1 Km" thành "11km", khớp được chuỗi OCR trả về "1.1Km"')
+kiem(oc.tim("").empty, "tra chuỗi rỗng thì trả bảng rỗng, không nổ")
+
+_bc = oc.bang()
+if _bc is None:
+    print("  ⏭  chưa lập chỉ mục chữ chung — bỏ qua phép kiểm nội dung")
+else:
+    kiem(set(_bc.columns) >= {"video_id", "n", "frame_idx", "text", "ky_tu"},
+         "chỉ mục chữ đủ cột để ghép ngược về metadata")
+    kiem(_bc.set_index(["video_id", "n"]).index.is_unique,
+         "mỗi khung đúng một dòng, chạy tiếp không sinh bản trùng")
+    kiem((_bc.ky_tu == _bc.text.str.len()).all(),
+         "cột đếm ký tự khớp đúng chuỗi đã lưu")
+
+    # Tra bằng chữ CÓ THẬT trên một khung thì chính khung ấy phải lên đầu.
+    _mau = _bc[_bc.ky_tu >= 60].head(1)
+    if len(_mau):
+        _r = _mau.iloc[0]
+        _tu = [w for w in dict.fromkeys(oc._bo_dau(_r.text).split())
+               if len(w) >= 5][:4]
+        _kq = oc.tim(" ".join(_tu), limit=20)
+        kiem(len(_kq) and (_kq.video_id == _r.video_id).any(),
+             "gõ chữ có thật trên khung thì video ấy nằm trong 20 kết quả đầu")
+
+# Ô tra chữ phải là ĐẦU MỐI dẫn sang tìm ảnh, không phải ngõ cụt in ra chữ.
+_o_chu = [t for t in at.text_input if "chữ trên khung" in (t.label or "")]
+if _o_chu:
+    _r2 = _o_chu[0].set_value("chang").run(timeout=120)
+    _nut = [b for b in _r2.button if "ảnh giống" in (b.label or "")]
+    kiem(bool(_nut), f"kết quả tra chữ có nút tìm ảnh giống (thấy {len(_nut)})")
+    if _nut:
+        _r3 = _nut[0].click().run(timeout=120)
+        _sd = (_r3.session_state["seed_row"]
+               if "seed_row" in _r3.session_state else None)
+        kiem(isinstance(_sd, int),
+             f"bấm nút thì đặt seed_row để tab KIS tìm ảnh giống (={_sd})")
+
+# Luật chọn của dem_o — đo 24/08: ít vật thì toàn khung thắng 4/4 so với 1/4,
+# nhiều ký hiệu nhỏ thì toàn khung không nhìn xuể.
+import inspect  # noqa: E402
+
+_src = inspect.getsource(qamod.dem_o)
+kiem("count_toan" in _src and "count_cong" in _src,
+     "dem_o trả CẢ hai con số, không giấu con số bị loại")
+kiem("toan <= 10" in _src, "dem_o có ngưỡng chuyển giữa toàn khung và cộng ô")
+kiem("Chỉ đếm những thứ nằm TRONG phần cắt" in qamod.PROMPT_DEM,
+     "mẫu nhắc đếm cấm đoán phần bị cắt mất — nếu không ô nào cũng đếm cả ảnh")
+
 # ── tab TRAKE: bước 1 phải bày CẢ CHUỖI, không phải một ảnh đại diện ────────
 # Bản cũ gộp mọi mốc vào một rổ rồi khử trùng video, nên mỗi video chỉ còn ĐÚNG
 # MỘT ảnh — của mốc khớp mạnh nhất. Người thi không có gì để phân biệt hai video

@@ -105,16 +105,17 @@ def _feat_neo():
     return _corpus()[1]
 
 
-def align_moment(video_id: str, text_vec: np.ndarray, anchor_frame: int, *,
+def align_scores(video_id: str, text_vec: np.ndarray, anchor_frame: int, *,
                  model_name: str, pretrained: str,
                  window: int = 60, coarse_step: int = 5, fine_span: int = 6,
-                 verbose: bool = False) -> tuple[int, float, int]:
+                 verbose: bool = False) -> tuple[list[int], np.ndarray, int]:
+    """Điểm của MỌI khung đã mã hoá quanh mỏ neo, không chỉ khung thắng."""
     n_enc = 0
 
     coarse = list(range(anchor_frame - window, anchor_frame + window + 1, coarse_step))
     ids, imgs = read_frames(video_id, coarse)
     if not ids:
-        return anchor_frame, float("-inf"), 0
+        return [], np.zeros(0), 0
     sims = _encode_images(imgs, model_name, pretrained) @ text_vec
     n_enc += len(imgs)
     best = int(ids[int(np.argmax(sims))])
@@ -130,10 +131,19 @@ def align_moment(video_id: str, text_vec: np.ndarray, anchor_frame: int, *,
             ids = list(ids) + list(ids2)
             sims = np.concatenate([sims, s2])
 
-    k = int(np.argmax(sims))
     if verbose:
+        k = int(np.argmax(sims))
         print(f"    tinh: +{n_enc - len(coarse)} khung -> frame {ids[k]} ({sims[k]:.4f})")
-    return int(ids[k]), float(sims[k]), n_enc
+    return [int(i) for i in ids], np.asarray(sims, dtype=np.float64), n_enc
+
+
+def align_moment(video_id: str, text_vec: np.ndarray, anchor_frame: int,
+                 **kw) -> tuple[int, float, int]:
+    ids, sims, n_enc = align_scores(video_id, text_vec, anchor_frame, **kw)
+    if not ids:
+        return int(anchor_frame), float("-inf"), 0
+    k = int(np.argmax(sims))
+    return ids[k], float(sims[k]), n_enc
 
 
 def choose_anchors(scores: np.ndarray, frames=None) -> list[int]:
@@ -166,10 +176,102 @@ def align_sequence(video_id: str, texts, anchors, *, model_name: str | None = No
     out = []
     for t, a in zip(texts, anchors):
         vec = encode_text(t, model_name, pretrained)
-        f, s, n = align_moment(video_id, vec, int(a), model_name=model_name,
-                               pretrained=pretrained, **kw)
-        out.append({"text": t, "anchor": int(a), "frame_idx": f, "score": s, "n_encode": n})
+        ids, sims, n = align_scores(video_id, vec, int(a), model_name=model_name,
+                                    pretrained=pretrained, **kw)
+        if not ids:
+            out.append({"text": t, "anchor": int(a), "frame_idx": int(a),
+                        "score": float("-inf"), "n_encode": 0, "cands": []})
+            continue
+        o = np.argsort(-sims)
+        k = int(o[0])
+        # Giữ cả bảng điểm: sinh dòng dự phòng về sau KHÔNG tốn thêm mã hoá.
+        out.append({"text": t, "anchor": int(a), "frame_idx": ids[k],
+                    "score": float(sims[k]), "n_encode": n,
+                    "cands": [(ids[i], float(sims[i])) for i in o]})
     return out
+
+
+def _thua(cands, per_moment: int, spread: int):
+    """Chọn ứng viên theo điểm nhưng ép cách nhau `spread` frame — dò tinh cho
+    hàng chục khung sát nhau, giữ nguyên thì 16 dòng đều nằm trong ±6 frame."""
+    giu = []
+    for f, sc in cands:
+        if all(abs(f - g) >= spread for g, _ in giu):
+            giu.append((f, sc))
+            if len(giu) >= per_moment:
+                break
+    return giu or list(cands[:per_moment])
+
+
+def candidate_rows(moments, limit: int = 100, per_moment: int = 16,
+                   spread: int = 10, beam: int = 4000) -> list[list[int]]:
+    """Tới `limit` chuỗi frame tăng dần, xếp theo tổng điểm. Không mã hoá thêm."""
+    cols = []
+    for m in moments:
+        c = m.get("cands") or [(int(m["frame_idx"]), 0.0)]
+        cols.append(sorted(_thua(c, per_moment, spread), key=lambda x: x[0]))
+    if not cols:
+        return []
+
+    duong = [([f], sc) for f, sc in cols[0]]
+    for c in cols[1:]:
+        moi = [(d + [f], t + sc) for d, t in duong for f, sc in c if f > d[-1]]
+        if not moi:
+            return []
+        moi.sort(key=lambda x: -x[1])
+        duong = moi[:beam]
+    duong.sort(key=lambda x: -x[1])
+    return [d for d, _ in duong[:limit]]
+
+
+def rai_luoi(frames, limit: int = 100, buoc: int = 20) -> list[list[int]]:
+    """Dòng dự phòng quanh MỘT chuỗi đã có, không cần mô hình lẫn bảng điểm.
+
+    Mỗi dòng chỉ đẩy một mốc đi ±k·bước. Đo 21/08 trên 8 chuỗi eval: ngang
+    ngửa cách xếp theo điểm (±10 frame: 0,2004 so với 0,2033)."""
+    import itertools
+    goc = [int(f) for f in frames]
+    ra, thay = [list(goc)], {tuple(goc)}
+    for k in itertools.count(1):
+        them = False
+        for d in (buoc * k, -buoc * k):
+            for j in range(len(goc)):
+                r = list(goc)
+                r[j] += d
+                if r[j] < 0 or any(b <= a for a, b in zip(r, r[1:])):
+                    continue
+                them = True
+                if tuple(r) not in thay:
+                    thay.add(tuple(r))
+                    ra.append(r)
+                    if len(ra) >= limit:
+                        return ra
+        if not them or k > 200:
+            return ra
+
+
+def submission_rows(video_moments, limit: int = 100, **kw) -> list[tuple]:
+    """Gộp nhiều video đã căn thành danh sách dòng nộp, video tốt nhất trước.
+
+    Video đầu giữ phần lớn chỗ (sai video là mất trắng, mà bước 1 chọn đúng
+    video 8/8), nhưng video dự phòng vẫn phải có chỗ thật sự."""
+    vm = list(video_moments)
+    if not vm:
+        return []
+    du = limit // (2 * len(vm))
+    phan = [limit - du * (len(vm) - 1)] + [du] * (len(vm) - 1)
+
+    ra = []
+    for (vid, moments), n in zip(vm, phan):
+        ra.extend((vid, *f) for f in candidate_rows(moments, limit=n, **kw))
+    if len(ra) < limit:                       # video nào không đủ dòng thì bù
+        for vid, moments in vm:
+            for f in candidate_rows(moments, limit=limit, **kw):
+                if len(ra) >= limit:
+                    break
+                if (vid, *f) not in ra:
+                    ra.append((vid, *f))
+    return ra[:limit]
 
 
 @lru_cache(maxsize=1)

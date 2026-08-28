@@ -113,6 +113,36 @@ try:
 except ValueError:
     kiem(True, "chặn được mốc TRAKE đảo thứ tự")
 
+try:
+    nopbai.dong_trake("L01_V001", [200, 300, 300])
+    kiem(False, "phải chặn hai sự kiện TRAKE trùng một khung")
+except ValueError:
+    kiem(True, "chặn được hai sự kiện TRAKE trùng một khung")
+
+# Tên gói thật của BTC có tiền tố đợt — bộ soi cũ chê nhầm là sai quy ước.
+for ten in ("query-p1-16-trake.csv", "query-p1-1-kis.csv", "query-15-qa.csv"):
+    kiem(nopbai.dang_cua(ten) is not None, f"nhận đúng tên thật {ten}")
+kiem(not nopbai.kiem_tep("query-p1-1-kis.csv", ["L01_V001,1"]),
+     "tên có tiền tố gói vẫn qua được bộ soi")
+
+# 100 dòng TRAKE: đo 21/08 · 1 dòng 0,0917 → 100 dòng 0,2033 ở cửa sổ ±10 frame.
+import trake as tkmod  # noqa: E402
+mom = [{"frame_idx": 100, "cands": [(100 + 7 * i, 1.0 - 0.01 * i) for i in range(20)]},
+       {"frame_idx": 400, "cands": [(400 + 7 * i, 1.0 - 0.01 * i) for i in range(20)]}]
+hang = tkmod.candidate_rows(mom, limit=100)
+kiem(len(hang) > 1, f"sinh được nhiều dòng TRAKE dự phòng (thấy {len(hang)})")
+kiem(hang[0] == [100, 400], "dòng 1 vẫn đúng là chuỗi điểm cao nhất")
+kiem(all(all(b > a for a, b in zip(r, r[1:])) for r in hang),
+     "mọi dòng dự phòng đều tăng NGẶT")
+kiem(len({tuple(r) for r in hang}) == len(hang), "không dòng nào trùng dòng nào")
+kiem(all(len({r[j] for r in hang}) > 1 for j in range(len(mom))),
+     "mỗi mốc đều được thử nhiều giá trị, không chỉ mốc dễ nhất")
+nop2 = tkmod.submission_rows([("L01_V001", mom), ("L02_V002", mom)], limit=100)
+kiem(len(nop2) == 100, f"gộp nhiều video vẫn đủ 100 dòng (thấy {len(nop2)})")
+kiem(nop2[0][0] == "L01_V001", "video tốt nhất đứng đầu danh sách nộp")
+kiem({r[0] for r in nop2} == {"L01_V001", "L02_V002"},
+     "video dự phòng có mặt trong 100 dòng")
+
 print("\n" + ("🔴 CÓ LỖI: " + " · ".join(loi) if loi
               else "✅ ba dạng đúng định dạng · .zip đúng cấu trúc"))
 sys.exit(1 if loi else 0)
