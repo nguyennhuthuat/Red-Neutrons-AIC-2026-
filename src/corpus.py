@@ -38,6 +38,25 @@ def load_metadata() -> pd.DataFrame:
     return d
 
 
+def khung_that(pts_time: float, fps: float) -> int:
+    """Khung THẬT trong video, để soi bằng trình phát.
+
+    Cột frame_idx của ban tổ chức là làm SÀN của pts*fps, nên 12,9% khung
+    (22.922/177.321) thiếu đúng 1 so với khung thật. Đo trên 40 khung bất đồng:
+    round(pts*fps) khớp ảnh 39/40, frame_idx khớp 0/40.
+
+    KHÔNG dùng số này để nộp bài — bài nộp phải giữ nguyên frame_idx của ban
+    tổ chức. Số này chỉ để người thi mở video ra kiểm bằng mắt.
+    """
+    return int(round(float(pts_time) * float(fps)))
+
+
+def moc_gio(pts_time: float) -> str:
+    """pts_time thành mm:ss.mmm để dán thẳng vào ô tua của trình phát."""
+    t = max(0.0, float(pts_time))
+    return f"{int(t // 60):02d}:{t % 60:06.3f}"
+
+
 def kiem_tra(n: int = 200) -> tuple[int, int]:
     d = load_metadata()
     mau = d.image_path.iloc[:: max(1, len(d) // n)][:n]

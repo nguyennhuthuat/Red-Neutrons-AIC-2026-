@@ -113,6 +113,72 @@ if _rd:
 
 kiem(hasattr(qamod_tam := __import__("qa"), "dem_lap"),
      "qa có dem_lap để đếm lặp")
+
+# Cỡ rổ phải theo kênh: đo được kênh ảnh thuần 20->30 ăn +0,060, còn kênh lời
+# nói 20->30 thì LỖ 0,100 vì mỗi ảnh thêm kéo theo một dòng chữ thêm.
+_q = __import__("qa")
+kiem(_q.ro_goi_y("Đàn chim là loài gì?") == 30,
+     f"câu thuần ảnh gợi ý rổ 30 (thấy {_q.ro_goi_y('Đàn chim là loài gì?')})")
+kiem(_q.ro_goi_y("Tên của con đèo là gì?") == 20,
+     f"câu kênh lời nói gợi ý rổ 20 (thấy {_q.ro_goi_y('Tên của con đèo là gì?')})")
+kiem(_q.ro_goi_y("Tấm biển ghi chữ gì?") == 20, "câu kênh chữ gợi ý rổ 20")
+_top = at.session_state["qa_top"] if "qa_top" in at.session_state else None
+kiem(_top == 30, f"mặc định rổ là 30 chứ không 20 (thấy {_top})")
+
+# frame_idx của BTC làm SÀN pts*fps nên 12,9% khung thiếu đúng 1 khung thật.
+# Số NỘP phải giữ nguyên; chỉ thêm dòng mách người thi tua video ở đâu.
+import corpus as _c  # noqa: E402
+kiem(_c.khung_that(4.03333, 30.0) == 121,
+     f"khung_that làm TRÒN chứ không làm sàn (thấy {_c.khung_that(4.03333, 30.0)})")
+kiem(_c.moc_gio(4.03333) == "00:04.033",
+     f"moc_gio ra mm:ss.mmm (thấy {_c.moc_gio(4.03333)})")
+_md = _c.load_metadata()
+_r = _md[(_md.video_id == "L21_V023") & (_md.n == 3)]
+if len(_r):
+    _r = _r.iloc[0]
+    kiem(int(_r.frame_idx) == 120,
+         f"bài nộp GIỮ NGUYÊN frame_idx của BTC (thấy {int(_r.frame_idx)})")
+_ma = (ROOT / "ui" / "search_ui.py").read_text(encoding="utf-8")
+kiem("khung thật" in _ma, "màn hình mách khung thật khi nó lệch số nộp")
+
+# Bộ chấm: bỏ chữ do CÂU HỎI cấp sẵn, nhưng KHÔNG được lỏng tay.
+sys.path.insert(0, str(ROOT / "eval"))
+import danh_gia_qa as _dg  # noqa: E402
+_H = "Người này mặc áo màu gì?"
+kiem(_dg.trung("màu đỏ", "áo đỏ", _H), "chấm ĐÚNG: 'màu đỏ' cho nhãn 'áo đỏ'")
+kiem(_dg.trung("bắp chân", "chân (vùng bắp chân / khoeo chân)",
+               "Bác sĩ siêu âm ở bộ phận nào?"),
+     "chấm ĐÚNG: nhãn có ngoặc là liệt kê cách nói")
+kiem(not _dg.trung("màu vàng", "đen và vàng kim", "Con lân có màu gì?"),
+     "chấm SAI: 'màu vàng' thiếu 'đen' thì không được tính đúng")
+kiem(not _dg.trung("hồng và xanh dương", "hồng và xanh lá",
+                   "Dung dịch có màu gì?"),
+     "chấm SAI: 'xanh dương' khác 'xanh lá' — bỏ dấu làm 'lá' trùng 'là'")
+kiem(not _dg.trung("", "áo đỏ", _H), "chấm SAI: đáp án rỗng")
+kiem(_dg.trung("bốn miếng", "4", "Có mấy miếng?"), "chấm ĐÚNG: số viết bằng chữ")
+
+# Câu KIS tả NHIỀU cảnh nối tiếp: 70% đề thật đợt 1 có mốc thời gian, bộ đo cũ
+# có 0/81. Tách sai chỗ thì cảnh nào cũng vô nghĩa.
+import chuoi as _ch  # noqa: E402
+_c2 = _ch.tach_canh("Đoạn clip bắt đầu bằng cảnh cà rốt luộc trong nồi nước sôi. "
+                    "Đoạn clip kết thúc bằng hình ảnh đĩa rau củ trình bày đẹp mắt")
+kiem(len(_c2) == 2, f"tách được 2 cảnh từ câu bắt đầu/kết thúc (thấy {len(_c2)})")
+kiem("bắt đầu" not in _c2[0], "bỏ cụm mở đầu, chỉ giữ nội dung cảnh")
+_c3 = _ch.tach_canh("Một người đứng dưới nước. Tiếp theo là cảnh kéo lưới cá, "
+                    "sau đó một nhóm người tiến đến quay phim.")
+kiem(len(_c3) == 3, f"tách được 3 cảnh (thấy {len(_c3)})")
+_c1 = _ch.tach_canh("Cảnh quay một nhóm hơn 5 người xếp hàng tập thể dục.")
+kiem(len(_c1) == 1, "câu tả MỘT cảnh thì không bị cắt")
+_cl = _ch.tach_canh("một bản đồ trên đó công trình thủy lợi lần lượt xuất hiện "
+                    "bốn lần. Sau đó chuyển sang cảnh con đập quay từ trên cao")
+kiem(len(_cl) == 2, f"'lần lượt' KHÔNG phải mốc đổi cảnh (thấy {len(_cl)})")
+import numpy as _np  # noqa: E402
+_S = _np.array([[9.0, 0.0, 0.0], [0.0, 9.0, 0.0]], dtype=_np.float32)
+_v = _np.array(["A", "A", "B"]); _t = _np.array([0.0, 5.0, 0.0], dtype=_np.float32)
+_d = _ch.diem_chuoi(_S, _v, _t)
+kiem(_d[0] > _d[2], "khung có cảnh sau nối tiếp được cộng điểm, khung lẻ thì không")
+kiem("nopbai.dong_kis(r.video_id, r.frame_idx)" in _ma,
+     "dòng nộp KIS vẫn dùng frame_idx gốc, không dùng khung thật")
 _g = {"count": 3, "cac_lan": [2, 3, 4], "on_dinh": False}
 kiem(not _g["on_dinh"], "dem_lap báo được khi ba lần chạy lệch nhau")
 

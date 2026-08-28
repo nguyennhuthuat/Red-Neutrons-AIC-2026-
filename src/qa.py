@@ -217,14 +217,31 @@ def chon_kenh(question_vi: str) -> dict:
     return {"asr": False, "ocr": False}
 
 
-def answer_over_hits(question_vi: str, hits, *, desc: str = "", top: int = 20,
-                     frame_from: str = "clip", kem_asr: bool | None = None,
+def ro_goi_y(question_vi: str) -> int:
+    """Rổ nên lấy bao nhiêu ảnh cho câu hỏi này.
+
+    Đo 28/08, cùng bộ câu, chỉ đổi cỡ rổ:
+      kênh ảnh thuần   20 -> 30 : 0,620 -> 0,680  (+0,060)
+      kênh lời nói     20 -> 30 : 0,450 -> 0,350  (-0,100)
+    Rổ to mua thêm độ phủ (0,767 -> 0,837 trên 86 câu), nhưng khi kênh phụ trợ
+    bật thì mỗi ảnh thêm cũng kéo theo MỘT DÒNG CHỮ thêm, và lấy nhầm dòng đắt
+    hơn khoản độ phủ mua được.
+    """
+    t = chon_kenh(question_vi)
+    return 20 if (t["asr"] or t["ocr"]) else 30
+
+
+def answer_over_hits(question_vi: str, hits, *, desc: str = "",
+                     top: int | None = None, frame_from: str = "clip",
+                     kem_asr: bool | None = None,
                      kem_ocr: bool | None = None, **kw) -> dict | None:
-    sub = hits.iloc[:top]
-    # None = tự chọn theo ý định câu hỏi; True/False = người gọi ép tay.
+    # None = tự chọn theo ý định câu hỏi; True/False/số = người gọi ép tay.
     tu = chon_kenh(question_vi)
     kem_asr = tu["asr"] if kem_asr is None else kem_asr
     kem_ocr = tu["ocr"] if kem_ocr is None else kem_ocr
+    if top is None:
+        top = 20 if (kem_asr or kem_ocr) else 30
+    sub = hits.iloc[:top]
     if kem_asr and "loi_noi" not in kw:
         kw["loi_noi"] = [asr_khung(v, int(f)) for v, f
                          in zip(sub["video_id"], sub["frame_idx"])]

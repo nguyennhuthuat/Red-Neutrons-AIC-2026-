@@ -16,8 +16,30 @@ sys.path.insert(0, str(ROOT / "src"))
 os.environ.setdefault("VLM_CHO_429", "0")
 
 import corpus  # noqa: E402  (nạp metadata + sửa đường dẫn ảnh cho đúng máy)
+import chuoi  # noqa: E402  (tách câu tả nhiều cảnh, chấm theo thứ tự)
 import ensemble  # noqa: E402  (encoder phụ, cộng điểm trên toàn corpus)
 import rerank  # noqa: E402  (tầng re-rank, xem src/rerank.py)
+
+
+def dong_soi(hit) -> str | None:
+    """Mách người thi mở video ở đâu. Cột frame_idx của BTC làm sàn pts*fps nên
+    12,9% khung thiếu đúng 1 — ngay chỗ cắt cảnh thì lệch 1 khung là sang hẳn
+    cảnh khác, và người thi tưởng máy tìm sai. Số NỘP vẫn giữ nguyên frame_idx."""
+    try:
+        t, f, fi = float(hit["pts_time"]), float(hit["fps"]), int(hit["frame_idx"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    that = corpus.khung_that(t, f)
+    if that == fi:
+        return None
+    return (f"soi trong trình phát: tua tới **{corpus.moc_gio(t)}** "
+            f"(khung thật {that}, lệch +{that - fi} so với số nộp)")
+
+
+def qamod_goiy(cau: str) -> int:
+    """Cỡ rổ nên dùng cho câu hỏi này — xem qa.ro_goi_y."""
+    import qa as _q
+    return _q.ro_goi_y(cau or "")
 import nopbai  # noqa: E402  (đóng gói .zip đúng cấu trúc thể lệ)
 
 DATASET = "hcmc2026"
@@ -86,7 +108,7 @@ def encode_text(query: str) -> np.ndarray:
 
 def search(query: str, top_k: int, ens_w: float = 0.0,
            mark_rows: list[int] | None = None, beta: float = 0.4,
-           thuong_video: float = 3.0) -> pd.DataFrame:
+           thuong_video: float = 3.0, canh: list[str] | None = None) -> pd.DataFrame:
     meta = load_metadata()
     qvec = encode_text(query)
 
@@ -122,6 +144,13 @@ def search(query: str, top_k: int, ens_w: float = 0.0,
         if loai:
             tong = np.where(np.isin(meta["video_id"].to_numpy(), list(loai)),
                             -np.inf, tong)
+        if canh and len(canh) > 1:
+            # Câu tả nhiều cảnh nối tiếp: chấm theo ĐÚNG THỨ TỰ thời gian.
+            Sc = np.stack([(FR @ encode_text(c)[0]).astype(np.float32)
+                           for c in canh])
+            tong = tong + chuoi.diem_chuoi(
+                Sc, meta["video_id"].to_numpy(),
+                meta["pts_time"].to_numpy().astype(np.float32))
         top = np.argsort(-tong, kind="stable")[:top_k]
         scores, ids = tong[None, top], top[None, :]
     else:
@@ -294,6 +323,9 @@ def frame_card(hit, show_similar_button=True):
         st.markdown(":grey_background[no image]")
 
     st.code(f"{hit['video_id']}, {int(hit['frame_idx'])}", language=None)
+    _soi = dong_soi(hit)
+    if _soi:
+        st.caption(f":orange[{_soi}]")
 
     v = hit.get("vlm", np.nan)
     phu = [f"{hit['pts_time']:.0f}s"]
@@ -348,6 +380,9 @@ def show_videos(hits, ncol):
                 if img and Path(img).exists():
                     st.image(_anh_mo(img) if bi_loai else img, width="stretch")
                 st.code(f"{v['video_id']}, {int(v['frame_idx'])}", language=None)
+                _soi = dong_soi(v)
+                if _soi:
+                    st.caption(f":orange[{_soi}]")
                 st.caption(f"{int(v['n_hit'])} khung khớp")
 
                 rid_v = int(v["row_id"]) if "row_id" in v.index else None
@@ -615,13 +650,35 @@ with tab_kis:
         if note:
             st.caption(note)
 
+        # 70% câu KIS đợt 1 tả NHIỀU cảnh nối tiếp, mà bộ đo cũ có 0/81 câu
+        # loại này. Nhồi cả câu vào một vector là bắt CLIP tìm một khung vừa
+        # giống cảnh đầu vừa giống cảnh cuối — thường chẳng khung nào như thế.
+        # Dịch TỪNG cảnh giống hệt câu chính, nếu không thì cảnh đi tiếng Việt
+        # thô còn câu chính đi tiếng Anh — hai thang điểm khác nhau cộng vào nhau.
+        _mode = "google" if tr_mode.startswith("dịch") else "vi"
+        if query_en_override.strip():
+            _mode = "vi"   # người thi tự viết tiếng Anh: đừng dịch lại
+        _canh = [preprocess_query(c, _mode)[0] for c in chuoi.tach_canh(query_vi)]
+        _dung_chuoi = False
+        if len(_canh) > 1:
+            _dung_chuoi = st.checkbox(
+                f"Chấm theo THỨ TỰ {len(_canh)} cảnh (câu tả có mốc thời gian)",
+                value=True, key="kis_chuoi",
+                help="Cộng thêm điểm nếu SAU khung này, trong cùng video và "
+                     "trong 90 giây, có khung khớp cảnh kế tiếp. Chưa đo được "
+                     "trên bộ đo nào — bộ đo KIS hiện tại không có câu loại này.")
+            with st.expander(f"đã tách thành {len(_canh)} cảnh"):
+                for _i, _c in enumerate(_canh, 1):
+                    st.caption(f"{_i}. {_c}")
+
         depth = rerank_depth if use_vlm else 0
         deep = deep_to if (use_vlm and auto_deep) else 0
         hits = search(query, max(top_k, depth, deep, 100), ens_w=ens_w,
                       # Ô tích chỉ đụng tới kết quả khi công tắc được bật.
                       mark_rows=st.session_state.get("marked") if uu_tien else None,
                       beta=beta,
-                      thuong_video=3.0 if uu_tien else 0.3)
+                      thuong_video=3.0 if uu_tien else 0.3,
+                      canh=(_canh if _dung_chuoi else None))
 
         vlm_scores = None
         if use_vlm and depth:
@@ -683,8 +740,18 @@ with tab_qa:
     qa_ques = st.text_input(
         "Câu hỏi (tiếng Việt)", key="qa_ques",
         placeholder="vd: đàn chim trong ảnh là loài gì?")
+    # Mặc định 30 chứ không 20: đo được kênh ảnh thuần 20->30 ăn +0,060, và
+    # độ phủ rổ trên 86 câu tăng 0,767 -> 0,837. Nhưng khi kênh phụ trợ bật thì
+    # mỗi ảnh thêm kéo theo một dòng chữ thêm và 20 mới là chỗ tốt nhất.
     qa_top = st.select_slider("Số ảnh đưa cho VLM xem", options=[10, 20, 30, 50],
-                              value=20, key="qa_top")
+                              value=30, key="qa_top")
+    _goiy = qamod_goiy(st.session_state.get("qa_ques", ""))
+    if _goiy != qa_top:
+        st.caption(f":orange[Câu này dùng kênh phụ trợ — đo được rổ **{_goiy}** "
+                   f"tốt hơn {qa_top}. Mỗi ảnh thêm cũng thêm một dòng chữ.]"
+                   if _goiy < qa_top else
+                   f":orange[Câu này chỉ dùng ảnh — đo được rổ **{_goiy}** tốt "
+                   f"hơn {qa_top} (+0,100).]")
     qa_kieu = st.radio(
         "Kiểu câu hỏi", ["nhận dạng", "đếm"], horizontal=True, key="qa_kieu",
         help="Chế độ đếm hỏi CẢ toàn khung LẪN từng ô rời, rồi chọn theo độ "
@@ -780,6 +847,9 @@ with tab_qa:
                     st.caption(f":gray[mô hình tự khai {got['confidence']:.0f}/10 "
                                f"— con số này KHÔNG đáng tin, đã đo: 10/10 ở một "
                                f"câu bịa hẳn đáp án. Đừng dùng nó để quyết định.]")
+                    _soi = dong_soi(hits.iloc[0])
+                    if _soi:
+                        st.caption(f":orange[{_soi}]")
                     st.code(f"{got['video_id']}, {got['frame_idx']}, {got['answer']}",
                             language=None)
                     if got["vlm_frame_idx"] != got["frame_idx"]:

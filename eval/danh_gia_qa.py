@@ -71,7 +71,50 @@ def du_chu(s: str) -> str:
                     if not w.isdigit() and w not in SO_CHU)
 
 
-def trung(dap: str, that: str) -> bool:
+# Chỉ ba chữ nối. KHÔNG mở rộng danh sách này: bỏ dấu xong thì "lá" trùng
+# "là", "cỏ" trùng "có" — thêm chữ đệm là tự tay xoá mất chữ mang nghĩa. Bản
+# vá đầu mắc đúng lỗi đó và cho "xanh dương" khớp "xanh lá".
+_NOI = {"va", "hoac", "roi"}
+
+
+def _bien_the(that: str) -> list[str]:
+    """Nhãn có ngoặc hoặc gạch chéo là LIỆT KÊ cách nói chấp nhận được.
+
+    "chân (vùng bắp chân / khoeo chân)" nghĩa là ba cách nói đều đúng.
+    """
+    t = str(that)
+    ra = [t, re.sub(r"\([^)]*\)", " ", t)]
+    ra += re.findall(r"\(([^)]*)\)", t)
+    ra += [x for p in list(ra) for x in re.split(r"[/;]", p)]
+    return [x.strip() for x in dict.fromkeys(ra) if x and x.strip()]
+
+
+def _loi(s: str, hoi: str) -> set[str]:
+    """Tập chữ MANG NGHĨA: bỏ chữ mà câu hỏi đã nói sẵn, và ba chữ nối.
+
+    "mặc áo màu gì?" thì "áo" và "màu" do câu hỏi cấp, không phân biệt được gì.
+    Không bỏ thì "màu đỏ" bị chấm khác "áo đỏ" dù cùng một ý — đo được 6/50 câu
+    bộ chính trượt oan chỉ vì chuyện này.
+    """
+    cho = set(bo_dau(hoi).split()) | _NOI
+    return {w for w in bo_dau(s).split() if w not in cho}
+
+
+def _khop_tap(dap: str, that: str, hoi: str) -> bool:
+    """Mọi chữ mang nghĩa của nhãn phải CÓ MẶT trong đáp án.
+
+    Dùng phép bao hàm TẬP chứ không phải chuỗi con: chuỗi con cho "màu vàng"
+    khớp "đen và vàng kim" (thiếu hẳn "đen"), tập thì không. Chặn thêm đáp án
+    bắn vãi: liệt kê gấp đôi số chữ của nhãn thì không tính.
+    """
+    b = _loi(that, hoi)
+    if not b:
+        return False
+    a = _loi(dap, hoi)
+    return b <= a and len(a) <= 2 * len(b) + 1
+
+
+def trung(dap: str, that: str, hoi: str = "") -> bool:
     """Chấm nới tay: bỏ dấu, bỏ dấu câu, một bên chứa bên kia là tính đúng.
 
     Nới vì bộ chấm chặt tạo kết quả âm giả — "TP.HCM" với "TPHCM" từng bị chấm
@@ -84,6 +127,8 @@ def trung(dap: str, that: str) -> bool:
     sd, st = so_trong(str(dap)), so_trong(str(that))
     if (sd and st and sd == st
             and len(du_chu(dap)) <= DU_TOI_DA and len(du_chu(that)) <= DU_TOI_DA):
+        return True
+    if any(_khop_tap(dap, bt, hoi) for bt in _bien_the(that)):
         return True
     a, b = bo_dau(dap), bo_dau(that)
     # Chứa nhau thì tính đúng, NHƯNG hai bên phải dài xấp xỉ nhau. Không có
