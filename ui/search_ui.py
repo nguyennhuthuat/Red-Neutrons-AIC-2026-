@@ -36,6 +36,19 @@ def dong_soi(hit) -> str | None:
             f"(khung thật {that}, lệch +{that - fi} so với số nộp)")
 
 
+@st.cache_resource(show_spinner="Chuẩn bị bộ dịch ...")
+def ham_nong_dich() -> str:
+    """Thử đường dịch NGAY khi mở app, để câu đầu tiên không phải chờ.
+
+    Endpoint Google chặn theo IP khi gọi dồn (hỏng 6/6 ngày 28/08). Khi đó phải
+    nạp mô hình trên máy, mất ~20 giây — bắt người thi chờ giữa câu hỏi đầu là
+    mất thời gian ở đúng lúc đắt nhất.
+    """
+    import translate as tr
+    tr.to_english("một người đi bộ trên đường")
+    return tr.NGUON_CUOI
+
+
 def qamod_goiy(cau: str) -> int:
     """Cỡ rổ nên dùng cho câu hỏi này — xem qa.ro_goi_y."""
     import qa as _q
@@ -93,7 +106,13 @@ def preprocess_query(query: str, mode: str = "vi") -> tuple[str, str | None]:
     import translate as tr
     en = tr.to_english(query)
     if en is None:
-        return query, "⚠ dịch hỏng — đang dùng câu tiếng Việt gốc (vẫn chạy được)"
+        return query, ("⚠ dịch hỏng CẢ hai đường (mạng lẫn ngoại tuyến) — đang "
+                       "dùng câu tiếng Việt gốc. SigLIP2 vẫn đọc được tiếng "
+                       "Việt, chỉ kém hơn: 0,704 so với 0,780.")
+    if tr.NGUON_CUOI == "ngoại tuyến":
+        # Endpoint Google chặn theo IP khi gọi dồn. Mô hình trên máy không cần
+        # mạng, không cần khoá API, nên phòng thi không bao giờ mất khâu dịch.
+        return en, f"→ dịch *(ngoại tuyến, trên máy)*: *{en}*"
     return en, f"→ dịch: *{en}*"
 
 
@@ -643,8 +662,13 @@ with tab_kis:
         if query_en_override.strip():
             query, note = query_en_override.strip(), "→ dùng câu tiếng Anh bạn tự viết"
         elif tr_mode.startswith("dịch"):
+            _ng = ham_nong_dich()      # nạp sẵn bộ dịch, chỉ chạy lần đầu
             with st.spinner("Đang dịch ..."):
                 query, note = preprocess_query(query_vi, "google")
+            if _ng == "ngoại tuyến":
+                st.caption(":orange[Endpoint dịch qua mạng không phản hồi — đang "
+                           "dùng mô hình trên máy. Không cần mạng, không tốn "
+                           "khoá API.]")
         else:
             query, note = preprocess_query(query_vi, "vi")
         if note:

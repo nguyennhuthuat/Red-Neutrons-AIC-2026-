@@ -48,7 +48,9 @@ kiem(any("Gợi ý từ ban tổ chức" in (t.label or "") for t in at.text_inp
 
 print("\nchạy thử một lượt tìm thật…")
 at.text_input[0].set_value("người phụ nữ đội nón lá đang hái dứa ngoài ruộng")
-at = at.run()
+# timeout 120: lần dịch ĐẦU phải nạp mô hình ngoại tuyến (~20 s) khi endpoint
+# mạng đã chết. Mặc định 3 s làm màn hình dựng dở dang, check báo sai chỗ.
+at = at.run(timeout=120)
 kiem(not at.exception, "không có ngoại lệ sau khi tìm"
      + (f" — {at.exception[0].value}" if at.exception else ""))
 ma = [c.value for c in at.code if "," in (c.value or "")]
@@ -177,6 +179,20 @@ _S = _np.array([[9.0, 0.0, 0.0], [0.0, 9.0, 0.0]], dtype=_np.float32)
 _v = _np.array(["A", "A", "B"]); _t = _np.array([0.0, 5.0, 0.0], dtype=_np.float32)
 _d = _ch.diem_chuoi(_S, _v, _t)
 kiem(_d[0] > _d[2], "khung có cảnh sau nối tiếp được cộng điểm, khung lẻ thì không")
+
+# Dịch: endpoint Google chặn theo IP khi gọi dồn (hỏng 6/6 ngay trước giờ thi
+# 28/08). Phải có đường lùi KHÔNG cần mạng, nếu không phòng thi mất khâu dịch.
+import translate as _tr  # noqa: E402
+kiem(hasattr(_tr, "dich_ngoai_tuyen"), "có đường dịch ngoại tuyến")
+kiem(hasattr(_tr, "mach_mang_con_song"),
+     "có cầu dao: mạng chết thì thôi gọi, đỡ phí 6 giây mỗi truy vấn")
+_tr.dong_lai_cau_dao()
+kiem(_tr.mach_mang_con_song(), "đóng lại cầu dao thì đường mạng bật lại")
+_ma = (ROOT / "ui" / "search_ui.py").read_text(encoding="utf-8")
+kiem("ngoại tuyến, trên máy" in _ma,
+     "màn hình nói rõ khi câu được dịch bằng mô hình trên máy")
+kiem("0,704 so với 0,780" in _ma,
+     "hỏng cả hai đường thì nói rõ mất bao nhiêu điểm, không chỉ báo lỗi suông")
 kiem("nopbai.dong_kis(r.video_id, r.frame_idx)" in _ma,
      "dòng nộp KIS vẫn dùng frame_idx gốc, không dùng khung thật")
 _g = {"count": 3, "cac_lan": [2, 3, 4], "on_dinh": False}
