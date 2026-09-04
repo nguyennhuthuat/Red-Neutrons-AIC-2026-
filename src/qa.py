@@ -203,6 +203,36 @@ NHAC_SUA_TEN = (
 )
 
 
+# Đơn vị ĐO và cụm hỏi-giá-trị: thấy là ĐỌC một con số in sẵn, không phải đếm
+# vật. MỌI đơn vị phải neo hai đầu — "ha" không neo thì khớp trong chữ "hai" và
+# câu "có mấy công an đứng hai bên" bị loại oan.
+_DV_TU = ("gam", "gram", "g", "kg", "ki-?lô", "mi-?li", "ml", "lít", "mét",
+          "m", "cm", "km", "phần nghìn", "phần trăm", "độ", "đồng", "triệu",
+          "giờ", "phút", "giây", "tuổi", "năm", "tháng", "ngày", "tấn",
+          "ha", "héc-?ta")
+_DO = re.compile(r"(?:\b(?:" + "|".join(_DV_TU) + r")\b|%|°)", re.I)
+_GIA_TRI = re.compile(
+    r"trọng lượng|khối lượng|cân nặng|nhiệt độ|chiều (?:cao|dài|rộng)|độ mặn|"
+    r"tốc độ|tỉ lệ|tỷ lệ|trong bảng|trên bảng|ghi trong|đơn vị", re.I)
+_DOC_SO = re.compile(r"\b(?:là\s+)?số\s+(?:mấy|nào|bao nhiêu)\b", re.I)
+_DEM = re.compile(r"\b(?:bao nhiêu|mấy)\s+\S", re.I)
+_DEM2 = re.compile(r"\b(?:đếm\s+(?:được|xem|có)|có tất cả|tổng cộng)\b", re.I)
+
+
+def la_cau_dem(question_vi: str) -> bool:
+    """Câu này có phải ĐẾM VẬT không (khác hẳn ĐỌC một con số in sẵn).
+
+    Đo trên 98 câu hỏi của mọi bộ đo trong repo: bắt đủ 5/5 câu mang nhãn
+    ``đếm`` và không sót câu nào. Nó còn bắt thêm 5 câu đang mang nhãn ``nhìn``
+    mà thật ra là đếm ("con robot đi bằng mấy chân", "trên đĩa có mấy miếng cà
+    chua bi") --- nhãn sai chứ luật không sai.
+    """
+    c = " ".join(str(question_vi or "").lower().split())
+    if _DOC_SO.search(c) or _DO.search(c) or _GIA_TRI.search(c):
+        return False
+    return bool(_DEM.search(c) or _DEM2.search(c))
+
+
 def chon_kenh(question_vi: str) -> dict:
     """Câu hỏi này cần kênh phụ trợ nào. Trả {"asr": bool, "ocr": bool}.
 

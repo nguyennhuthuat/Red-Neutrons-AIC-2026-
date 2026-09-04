@@ -236,7 +236,9 @@ def basket_looks_wrong(scores: np.ndarray, threshold: float = 10.0) -> bool:
 
 def basket_uncertain(base_scores, *, shallow: int = 20,
                      threshold: float = 0.12) -> bool:
-    s = np.asarray(base_scores, dtype=np.float64)[:shallow]
+    # Sắp lại giảm dần: rổ Q&A xen kẽ hai thứ tự nên điểm không còn giảm
+    # đều, mà công thức dưới giả định thế và sẽ báo động khống.
+    s = np.sort(np.asarray(base_scores, dtype=np.float64))[::-1][:shallow]
     if len(s) < 2 or s[0] <= 0:
         return False
     return bool((s[0] - s[-1]) / s[0] < threshold)

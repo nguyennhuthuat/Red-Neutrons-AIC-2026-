@@ -8,6 +8,28 @@ ROOT = Path(__file__).resolve().parent.parent
 UI = ROOT / "ui" / "search_ui.py"
 sys.path.insert(0, str(ROOT / "src"))
 
+# Kho bài nộp nay ghi ra đĩa, nên phép kiểm phải trỏ sang thư mục tạm —
+# ghi vào submission/ thật là để lẫn file rác vào .zip nộp.
+import os  # noqa: E402
+import tempfile  # noqa: E402
+KHO_TAM = Path(tempfile.mkdtemp(prefix="kho_kiem_"))
+os.environ["KHO_BAI_NOP"] = str(KHO_TAM)
+
+
+def _anh_kho():
+    """Ảnh chụp kho bài nộp THẬT: tên + cỡ + thời điểm sửa."""
+    d = ROOT / "submission"
+    if not d.is_dir():
+        return {}
+    return {p.name: (p.stat().st_size, p.stat().st_mtime_ns)
+            for p in d.iterdir() if p.is_file()}
+
+
+# Chụp TRƯỚC khi dựng app. Bản cũ chỉ kiểm "file có tồn tại không", nên đến khi
+# người thi nộp thật một câu trùng tên mặc định của phép kiểm là nó báo động
+# giả — mà báo động giả về mất bài thi thì lần sau không ai tin nữa.
+KHO_TRUOC = _anh_kho()
+
 from streamlit.testing.v1 import AppTest  # noqa: E402
 
 loi = []
@@ -43,12 +65,21 @@ kiem(nhan_sl[:2] == ["Số ô hiển thị", "Số cột"],
      f"hai thanh trượt lộ ra đúng là hiển thị: {nhan_sl[:2]}")
 
 # Ô nhập chính phải là gợi ý BTC, không phải thứ gì khác.
-kiem(any("Gợi ý từ ban tổ chức" in (t.label or "") for t in at.text_input),
+def o_theo_nhan(app, nhan):
+    """Ô nhập chọn theo NHÃN. Chọn theo chỉ số thì thêm một ô ở tab trước là
+    mọi phép kiểm sau đó lặng lẽ gõ nhầm ô."""
+    for t in app.text_area:
+        if nhan in (t.label or ""):
+            return t
+    raise AssertionError(f"không thấy ô nhãn {nhan!r}")
+
+
+kiem(any("Gợi ý từ ban tổ chức" in (t.label or "") for t in at.text_area),
      "ô nhập đầu tiên là gợi ý từ ban tổ chức")
 
 print("\nchạy thử một lượt tìm thật…")
-at.text_input[0].set_value("người phụ nữ đội nón lá đang hái dứa ngoài ruộng")
-# timeout 120: lần dịch ĐẦU phải nạp mô hình ngoại tuyến (~20 s) khi endpoint
+o_theo_nhan(at, "Gợi ý từ ban tổ chức").set_value("người phụ nữ đội nón lá đang hái dứa ngoài ruộng")
+# timeout 120: lần dịch ĐẦU phải dựng client Gemini (~8 s) khi endpoint
 # mạng đã chết. Mặc định 3 s làm màn hình dựng dở dang, check báo sai chỗ.
 at = at.run(timeout=120)
 kiem(not at.exception, "không có ngoại lệ sau khi tìm"
@@ -73,12 +104,12 @@ kiem(len(dd(at)) == 1, "tích OK ghi được vào phiên")
 kiem("dung_tich" not in at.session_state or not at.session_state["dung_tich"],
      "công tắc dùng-ô-tích-để-tìm mặc định TẮT")
 
-at.text_input[0].set_value("người phụ nữ đội nón lá đang hái dứa ngoài ruộng buổi sáng")
+o_theo_nhan(at, "Gợi ý từ ban tổ chức").set_value("người phụ nữ đội nón lá đang hái dứa ngoài ruộng buổi sáng")
 at = at.run()
 kiem(len(dd(at)) == 1,
      "GIỮ đánh dấu khi gợi ý chỉ dài thêm")
 
-at.text_input[0].set_value("hai chiếc máy bay đậu trên đường băng")
+o_theo_nhan(at, "Gợi ý từ ban tổ chức").set_value("hai chiếc máy bay đậu trên đường băng")
 at = at.run()
 kiem(not dd(at),
      "XOÁ đánh dấu khi sang câu truy vấn khác hẳn")
@@ -169,32 +200,257 @@ kiem("bắt đầu" not in _c2[0], "bỏ cụm mở đầu, chỉ giữ nội du
 _c3 = _ch.tach_canh("Một người đứng dưới nước. Tiếp theo là cảnh kéo lưới cá, "
                     "sau đó một nhóm người tiến đến quay phim.")
 kiem(len(_c3) == 3, f"tách được 3 cảnh (thấy {len(_c3)})")
+
+# Lọc khung dẫn chuyện của BTC. Đo 29/08 trên 81 câu bọc NGUYÊN VĂN khuôn chữ
+# đề thật: không lọc 0,5086 → lọc 0,7086. Trên bộ đo sạch: 0,7160 cả hai.
+import loccau as _lc  # noqa: E402
+
+_g = ("Đoạn clip cần tìm là cảnh quay trong một khu rừng, dưới gốc cây to. "
+      "Đôi mắt chim đỏ rực, tạo điểm nhấn rõ ràng. "
+      "Đây là loài chim thường thấy ở vùng Nam Bộ Việt Nam.")
+_l = _lc.bo_nhieu(_g)
+kiem("Đoạn clip cần tìm" not in _l, "bỏ được cụm mở 'Đoạn clip cần tìm là cảnh'")
+kiem("tạo điểm nhấn" not in _l, "bỏ được mệnh đề cảm thán 'tạo điểm nhấn'")
+kiem("thường thấy ở vùng Nam Bộ" not in _l, "bỏ được câu kiến thức ngoài hình")
+kiem("khu rừng" in _l and "mắt chim đỏ rực" in _l,
+     "GIỮ nguyên mọi chi tiết nhìn thấy được")
+kiem("tạo thành hình chân dung" in _lc.bo_nhieu(
+        "các mảnh bìa đổ bóng lên tường, tạo thành hình chân dung một người đàn ông"),
+     "KHÔNG bỏ 'tạo thành' — đó là thứ nhìn thấy được, khác 'tạo cảm giác'")
+kiem(_lc.bo_nhieu("Một con mèo vàng nằm trên ghế") == "Một con mèo vàng nằm trên ghế",
+     "câu sạch thì lọc KHÔNG đổi một chữ nào")
+
+# Cửa sổ 64 token của SigLIP2: 12/18 câu KIS đề thật vòng 1 bị cắt cụt trong im
+# lặng. Người thi phải nhìn thấy điều đó chứ không phải đoán.
+kiem(_lc.NGAN_SACH == 64, f"ngân sách token = 64 (thấy {_lc.NGAN_SACH})")
+try:
+    import json as _js
+    import open_clip as _oc
+    _mf = _js.loads((ROOT / "data" / "processed_hcmc2026" / "manifest.json")
+                    .read_text(encoding="utf-8"))
+    _tk = _oc.get_tokenizer(_mf["clip_model"])
+except Exception:
+    _tk = None
+if _tk is not None:
+    kiem(_lc.phan_giu_lai("một con mèo vàng", _tk) is None,
+         "câu ngắn thì KHÔNG báo cắt")
+    _dai = ("Đoạn video mô tả cảnh một người đàn ông mặc áo sơ mi trắng đứng "
+            "cạnh chiếc xe máy màu đỏ trên con đường nhựa rộng, phía sau có "
+            "hàng cây xanh và một toà nhà cao tầng màu xám, bên trái khung hình "
+            "còn có hai đứa trẻ đang chạy nhảy vui đùa cạnh bờ tường gạch cũ.")
+    kiem(_lc.dem(_dai, _tk) >= 64, f"câu dài dùng hết 64 token ({_lc.dem(_dai, _tk)})")
+    kiem(isinstance(_lc.phan_giu_lai(_dai, _tk), str),
+         "chỉ ra được ĐÚNG phần encoder đọc tới")
+
+# Nhiều câu liền nhau KHÔNG mặc nhiên là nhiều cảnh: phải có mốc thời gian.
+kiem(not _ch.co_moc("2 thanh niên phóng xe máy. Trong khung hình còn có ô tô xanh."),
+     "ba câu tả CÙNG một cảnh thì không tách (không có mốc thời gian)")
+kiem(_ch.co_moc("người đầu bếp lăn nguyên liệu. Nguyên liệu sau đó được phủ bột."),
+     "có 'sau đó' thì nhận ra là câu nhiều cảnh")
+_bep = _ch.tach_canh(
+    "người đầu bếp cầm nguyên liệu dài đã xiên que và lăn qua hỗn hợp băm nhỏ. "
+    "Nguyên liệu sau đó được chuyển sang một đĩa chứa bột trắng để phủ bên ngoài. "
+    "Cuối cùng, nguyên liệu đã được phủ kín một lớp bột trắng và đặt sang đĩa.")
+kiem(len(_bep) == 3, f"câu bếp 3 dòng tách đúng 3 cảnh (thấy {len(_bep)})")
+kiem(_bep[1].startswith("Nguyên liệu"),
+     f"cảnh giữa GIỮ được chủ ngữ (thấy {_bep[1][:30]!r})")
+
 _c1 = _ch.tach_canh("Cảnh quay một nhóm hơn 5 người xếp hàng tập thể dục.")
 kiem(len(_c1) == 1, "câu tả MỘT cảnh thì không bị cắt")
 _cl = _ch.tach_canh("một bản đồ trên đó công trình thủy lợi lần lượt xuất hiện "
                     "bốn lần. Sau đó chuyển sang cảnh con đập quay từ trên cao")
 kiem(len(_cl) == 2, f"'lần lượt' KHÔNG phải mốc đổi cảnh (thấy {len(_cl)})")
+
+# Đề vòng 2 xuống dòng mỗi cảnh thay vì viết "sau đó". Bám vào chữ mốc thì 7
+# câu bốn cảnh bị gộp làm một rồi cắt cụt ở token 64. Đo 30/08 trên 30 câu đề
+# thật: số câu có cảnh vẫn tràn giảm 10 -> 6.
+_4d = ("Một đầu bếp chế biến món ăn trong chảo, với các miếng dồi trường trắng.\n"
+       "Đầu bếp cho bông hẹ vào chảo rồi dùng dụng cụ đảo các nguyên liệu.\n"
+       "Các đoạn bông hẹ dài màu xanh được trộn cùng những miếng dồi trường.\n"
+       "Máy quay chuyển sang cận cảnh chảo khi đầu bếp tiếp tục xào và trộn.")
+kiem(len(_ch.tach_canh(_4d)) == 4,
+     f"4 dòng BTC = 4 cảnh, dù KHÔNG có chữ mốc nào (thấy {len(_ch.tach_canh(_4d))})")
+kiem(not _ch.co_moc(_4d), "…và đúng là câu này không có mốc thời gian nào")
+kiem(len(_ch.tach_canh(" ".join(_4d.split("\n")))) == 1,
+     "cùng bấy nhiêu chữ mà viết LIỀN một dòng thì KHÔNG tách — dòng mới là ranh giới")
+
+_nhan = ("4 cảnh này xảy ra liên tiếp nhau.\n"
+         "Cảnh 1: Hai người phụ nữ cùng nhau dán niêm phong một thùng carton.\n"
+         "Cảnh 2: Các thùng mì tôm và bọc bánh mì được sắp xếp ngay ngắn.\n"
+         "Cảnh 3: Một người đàn ông nhấc thùng mì tôm lên và xếp lên chồng mì.\n"
+         "Cảnh 4: Cảnh quay cận cảnh các thùng mì được xếp chồng trên xe tải.")
+_cn = _ch.tach_canh(_nhan)
+kiem(len(_cn) == 4, f"bỏ dòng meta '4 cảnh này xảy ra…' (thấy {len(_cn)} cảnh)")
+kiem(not _cn[0].lower().startswith("cảnh 1"), "gỡ nhãn 'Cảnh 1:' khỏi nội dung cảnh")
+kiem(len(_ch.tach_canh("E1: Cảnh đầu tiên có trái sầu riêng.\n"
+                       "E2: Cảnh đầu tiên có trái măng cụt.")) == 2,
+     "nhãn kiểu TRAKE 'E1:' cũng gỡ được")
+
+_tieu_de = ("Đây là một đoạn trong bài giảng. Trên slide bao gồm:\n"
+            "- Một nhóm nhân vật người 3D màu trắng vây quanh nhân vật màu đỏ.\n"
+            "Hai nhân vật hoạt hình nam đang trong tư thế thi đấu kéo co.")
+_td = _ch.tach_canh(_tieu_de)
+kiem(len(_td) == 2, f"dòng tiêu đề kết bằng ':' KHÔNG đứng riêng (thấy {len(_td)})")
+kiem("slide" in _td[0], "…mà ghép vào cảnh sau, giữ lại chữ 'slide'")
+kiem(len(_ch.tach_canh(_lc.bo_nhieu(_tieu_de))) == 2,
+     "…kể cả khi ĐI QUA bộ lọc trước — lọc phải giữ lại dấu ':' cuối dòng")
+kiem(len(_ch.cat_dong("một dòng duy nhất, dù có sau đó và cuối cùng")) == 1,
+     "cat_dong đếm DÒNG chứ không đếm mốc — giao diện lấy đó làm mặc định")
+
+kiem("\n" in _lc.bo_nhieu("Cảnh một người đứng.\nCảnh hai người ngồi."),
+     "lọc nhiễu GIỮ dấu xuống dòng — gộp về một dòng là tự xoá ranh giới cảnh")
+
+# Ngoặc đơn: người ra đề tự phân vân, hoặc chú metadata hành chính.
+kiem("sư tử" not in _lc.bo_nhieu("Một chú lân (hay rồng/sư tử?) màu vàng nhảy xuống"),
+     "bỏ ngoặc phân vân '(hay rồng/sư tử?)'")
+kiem("01/7/2025" not in _lc.bo_nhieu(
+        "chặng đua tại thành phố thuộc tỉnh Quảng Nam (cũ, trước ngày 01/7/2025)"),
+     "bỏ ngoặc metadata hành chính '(cũ, trước ngày …)'")
+kiem("mộc nhĩ" in _lc.bo_nhieu("nấm mèo (mộc nhĩ) khô đặt phía dưới chén gia vị"),
+     "GIỮ ngoặc chú thích đồng nghĩa — đó là nội dung, không phải nhiễu")
+
+# 9/9 đề Q&A vòng 2 là "tả cảnh … rồi mới hỏi". Khâu TÌM chỉ cần phần tả.
+_m, _h = _lc.tach_hoi("Cảnh quay một tô cháo đã nấu xong. Kế bên có 1 chén nhỏ "
+                      "màu đen. Hỏi topping trong video là thịt của con gì?")
+kiem(_h.startswith("Hỏi topping"), f"tách được câu hỏi ở cuối đề Q&A (thấy {_h[:30]!r})")
+kiem("Hỏi topping" not in _m, "…và phần mô tả không còn dính câu hỏi")
+kiem("chén nhỏ" in _m, "…nhưng vẫn giữ đủ phần tả cảnh")
+_m2, _h2 = _lc.tach_hoi("người này đối thoại với người đối diện để xem hôm nay "
+                        "nấu món gì. Hỏi X là con gì?")
+kiem("nấu món gì" in _m2,
+     "câu TẢ kết bằng 'gì.' KHÔNG bị nuốt theo — chỉ cắt câu kết bằng '?' hoặc mở bằng 'Hỏi'")
+kiem(_lc.tach_hoi("Hai bạn trẻ đang treo băng-rôn lớn màu xanh dương.")[1] == "",
+     "câu KIS không có câu hỏi thì không cắt gì")
+# p2-27 kết bằng dấu CHẤM: "…số nào không được nhìn thấy… trong các số từ 1-8."
+_m3, _h3 = _lc.tach_hoi("Cảnh quay một chú lân đang biểu diễn. Trong các số "
+                        "từ 16 giây đầu, số nào không được nhìn thấy từ góc "
+                        "nhìn của camera trong các số từ 1-8.")
+kiem(_h3.startswith("Trong các số") and "chú lân" in _m3,
+     "câu hỏi kết bằng dấu CHẤM vẫn tách được (luật rộng)")
+# Luật rộng CHỈ chạy khi luật hẹp trắng tay, và chỉ lấy MỘT câu — nếu không
+# thì p2-30 mất luôn câu tả "…để xem hôm nay nấu món gì."
+_m4, _h4 = _lc.tach_hoi("Cô gái cầm lên 2 con X. Sau đó người này đối thoại "
+                        "với người đối diện để xem hôm nay nấu món gì. "
+                        "Hỏi X là con gì?")
+kiem(_h4 == "Hỏi X là con gì?" and "nấu món gì" in _m4,
+     "luật rộng KHÔNG ăn lem sang câu tả khi luật hẹp đã tìm được câu hỏi")
+# TRAKE: số mốc phải khớp số cột nộp, một dòng bối cảnh thừa là hỏng cả câu.
+_mc, _bc = _ch.moc_trake(
+    "Video về một khu vườn cây ăn trái ở miền Tây Nam Bộ. Đây là chuỗi liên "
+    "tiếp các cảnh quay về 4 loại trái cây trong vườn.\n"
+    "E1: Cảnh đầu tiên có trái sầu riêng.\n"
+    "E2: Cảnh đầu tiên có trái măng cụt.\n"
+    "E3: Cảnh đầu tiên có trái bưởi.\n"
+    "E4: Cảnh đầu tiên có trái dâu bòn bon.")
+kiem(len(_mc) == 4 and len(_bc) == 1 and _mc[0].startswith("Cảnh đầu tiên"),
+     f"đề TRAKE có nhãn: chỉ dòng CÓ NHÃN là mốc (thấy {len(_mc)} mốc)")
+_mc2, _bc2 = _ch.moc_trake(
+    "4 cảnh này xảy ra liên tiếp nhau.\n"
+    "Cảnh 1: Hai người phụ nữ dán niêm phong một thùng carton.\n"
+    "Cảnh 2: Các thùng mì tôm được sắp xếp ngay ngắn.\n"
+    "Cảnh 3: Một người đàn ông nhấc thùng mì tôm lên.\n"
+    "Cảnh 4: Cận cảnh các thùng mì xếp chồng trên xe tải.")
+kiem(len(_mc2) == 4, f"dòng nói về CẤU TRÚC đề không thành mốc (thấy {len(_mc2)})")
+kiem(_ch.moc_trake("trộn nhân\nphết trứng\ncuốn lại")[0] == 
+     ["trộn nhân", "phết trứng", "cuốn lại"],
+     "đề KHÔNG đánh nhãn thì mọi dòng vẫn là mốc")
 import numpy as _np  # noqa: E402
 _S = _np.array([[9.0, 0.0, 0.0], [0.0, 9.0, 0.0]], dtype=_np.float32)
 _v = _np.array(["A", "A", "B"]); _t = _np.array([0.0, 5.0, 0.0], dtype=_np.float32)
 _d = _ch.diem_chuoi(_S, _v, _t)
 kiem(_d[0] > _d[2], "khung có cảnh sau nối tiếp được cộng điểm, khung lẻ thì không")
+# Bản cũ dùng cửa sổ làm CỬA KIỂM TRA CÓ MẶT rồi vẫn lấy max hậu tố toàn video:
+# hễ có bất kỳ khung nào trong cửa sổ là cảnh sau được phép khớp ở tận cuối
+# video. Tức tham số cua_so gần như vô hiệu — phải khoá lại bằng phép kiểm.
+_S2 = _np.array([[9.0, 0.0, 0.0], [0.0, 0.0, 9.0]], dtype=_np.float32)
+_v2 = _np.array(["A", "A", "A"])
+_t2 = _np.array([0.0, 10.0, 1000.0], dtype=_np.float32)
+kiem(_ch.diem_chuoi(_S2, _v2, _t2, cua_so=60.0)[0]
+     < _ch.diem_chuoi(_S2, _v2, _t2, cua_so=1e9)[0],
+     "cửa sổ thời gian được áp THẬT (cảnh sau cách 1000 s không được cộng ở cửa sổ 60 s)")
+# Vét cạn theo ĐÚNG định nghĩa mới: một DÃY khung tăng dần, mỗi cảnh một
+# khung, hai cảnh liền nhau cách nhau tối đa cua_so giây. Bản trước lấy max
+# ĐỘC LẬP cho từng cảnh trên cùng một khoảng sau cảnh đầu, nên nó không ép
+# thứ tự giữa các cảnh sau — chính mô hình đó vừa bị thay.
+def _day_tot_nhat(_ss, _vv, _tt, _w):
+    _k, _n = _ss.shape
+    if _k == 1:
+        return _ss[0].copy()
+    _vt = {int(g): r for r, g in enumerate(_np.lexsort((_tt, _vv)))}
 
-# Dịch: endpoint Google chặn theo IP khi gọi dồn (hỏng 6/6 ngay trước giờ thi
-# 28/08). Phải có đường lùi KHÔNG cần mạng, nếu không phòng thi mất khâu dịch.
+    def _di(_j, _tu):
+        if _j == _k:
+            return 0.0
+        _tot = None
+        for _g in range(_n):
+            if (_vv[_g] == _vv[_tu] and _vt[_g] > _vt[_tu]
+                    and _tt[_g] - _tt[_tu] <= _w):
+                _d = _di(_j + 1, _g)
+                if _d is not None:
+                    _v = _ss[_j][_g] + _d
+                    _tot = _v if _tot is None else max(_tot, _v)
+        return _tot
+
+    _ra = _np.zeros(_n, dtype=_np.float32)
+    for _a in range(_n):
+        _d = _di(1, _a)
+        _ra[_a] = 0.0 if _d is None else (_ss[0][_a] + _d)
+    return _ra / _k
+
+
+_rng = _np.random.default_rng(7)
+_sai = 0
+for _ in range(40):
+    _n, _k = int(_rng.integers(2, 13)), int(_rng.integers(2, 5))
+    _vv = _np.sort(_rng.integers(0, 3, _n))
+    _tt = _np.concatenate([_np.sort(_rng.random((_vv == u).sum()) * 200)
+                           for u in _np.unique(_vv)]).astype(_np.float32)
+    _ss = _rng.random((_k, _n)).astype(_np.float32)
+    _w = float(_rng.choice([5.0, 30.0, 90.0]))
+    _sai += not _np.allclose(_ch.diem_chuoi(_ss, _vv, _tt, cua_so=_w),
+                             _day_tot_nhat(_ss, _vv, _tt, _w), atol=2e-6)
+kiem(_sai == 0, f"chấm chuỗi khớp phép vét cạn trên 40 ca ngẫu nhiên ({_sai} lệch)")
+
+# Dịch: endpoint Google chặn theo IP khi gọi dồn (hỏng 6/6 ngày 28/08). Đường
+# lùi phải là Gemini chứ KHÔNG phải opus: đo 28/08 opus 0,5926, thua cả tiếng
+# Việt thô 0,7160. Một đường lùi dịch dở còn tệ hơn không dịch.
+# Lời nói là Ý KIẾN THỨ HAI, không phải một số để cộng. RRF(CLIP+BM25 lời nói)
+# đã đo là âm ở mọi trọng số; cái đo được là khác — trên 30 câu đề THẬT vòng 2,
+# lời nói trúng đúng video ngay hạng 1 ở 7 câu, CLIP chỉ 4 trong cùng nhóm ấy.
+import ast  # noqa: E402
+_ma = ast.parse((ROOT / "ui" / "search_ui.py").read_text(encoding="utf-8"))
+_ten_ham = {n.name for n in ast.walk(_ma) if isinstance(n, ast.FunctionDef)}
+kiem("_goi_y_loi_noi" in _ten_ham, "tab KIS có ô gợi ý từ lời nói")
+_than = (ROOT / "ui" / "search_ui.py").read_text(encoding="utf-8")
+kiem("_goi_y_loi_noi(query_vi.strip() or query, hits)" in _than,
+     "ô gợi ý nhận câu TIẾNG VIỆT — kho lời nói là tiếng Việt, đừng đưa bản dịch")
+_kdc = _than.split("def _goi_y_loi_noi")[1].split("@st.cache_data")[0]
+kiem("tong" not in _kdc and "score" not in _kdc,
+     "ô gợi ý KHÔNG đụng vào điểm xếp hạng (trộn RRF đã đo là âm)")
+kiem("except Exception" in _kdc,
+     "thiếu parquet ASR thì báo một dòng chứ không làm sập cả tab")
+import asr_tim as _at  # noqa: E402
+kiem(hasattr(_at, "tim") and hasattr(_at, "diem_khung"),
+     "asr_tim còn đủ hai cửa vào mà giao diện và bộ đo đang gọi")
 import translate as _tr  # noqa: E402
-kiem(hasattr(_tr, "dich_ngoai_tuyen"), "có đường dịch ngoại tuyến")
+kiem(hasattr(_tr, "dich_gemini"), "đường lùi CHÍNH là Gemini")
+kiem(_tr.MO_HINH_LUI == "",
+     f"opus MẶC ĐỊNH TẮT vì 0,5926 < 0,7160 (thấy {_tr.MO_HINH_LUI!r})")
 kiem(hasattr(_tr, "mach_mang_con_song"),
      "có cầu dao: mạng chết thì thôi gọi, đỡ phí 6 giây mỗi truy vấn")
 _tr.dong_lai_cau_dao()
 kiem(_tr.mach_mang_con_song(), "đóng lại cầu dao thì đường mạng bật lại")
 _ma = (ROOT / "ui" / "search_ui.py").read_text(encoding="utf-8")
-kiem("ngoại tuyến, trên máy" in _ma,
-     "màn hình nói rõ khi câu được dịch bằng mô hình trên máy")
-kiem("0,704 so với 0,780" in _ma,
+kiem("mạng Google đang bị chặn" in _ma,
+     "màn hình nói rõ khi câu được dịch bằng Gemini thay vì mạng Google")
+kiem("0,716 so với 0,783" in _ma,
      "hỏng cả hai đường thì nói rõ mất bao nhiêu điểm, không chỉ báo lỗi suông")
-kiem("nopbai.dong_kis(r.video_id, r.frame_idx)" in _ma,
-     "dòng nộp KIS vẫn dùng frame_idx gốc, không dùng khung thật")
+_than_nop = _ma[_ma.index("def dong_nop_kis("):]
+_than_nop = _than_nop[:_than_nop.index("\ndef ", 1)]
+kiem('meta["frame_idx"]' in _than_nop,
+     "dòng nộp KIS lấy frame_idx GỐC từ metadata")
+kiem("khung_that" not in _than_nop and "moc_gio" not in _than_nop,
+     "dòng nộp KIS KHÔNG dùng khung đã hiệu chỉnh (12,9% khung lệch 1)")
 _g = {"count": 3, "cac_lan": [2, 3, 4], "on_dinh": False}
 kiem(not _g["on_dinh"], "dem_lap báo được khi ba lần chạy lệch nhau")
 
@@ -207,6 +463,42 @@ kiem("rút thăm" in _ma, "câu đếm lệch nhau thì cảnh báo là rút th�
 
 # ── khâu đọc kỹ một khung: kiểm phần thuần tính toán, không tốn lời gọi API ──
 import qa as qamod  # noqa: E402
+# Đếm là bài toán KHÁC hẳn đọc một con số in sẵn: chia ô để đọc kỹ sẽ cắt
+# rời chính vật cần đếm. Đo trên 8 câu thật vòng 2 — đọc-kỹ thắng mọi loại
+# TRỪ đếm, chỗ đó nó về 0 còn nhìn-toàn-khung được 1,0.
+for _q in ["Trên đĩa có mấy miếng cà chua bi?",
+           "Có mấy công an đứng hai bên nhóm thanh niên?",
+           "Mỗi lần khuôn này làm được bao nhiêu cái bánh?",
+           "Con robot này di chuyển bằng mấy chân?"]:
+    kiem(qamod.la_cau_dem(_q), f"nhận ra câu ĐẾM: {_q[:42]}")
+# "hai" chứa "ha" — không neo ranh giới từ thì câu công an bị loại oan.
+kiem(qamod.la_cau_dem("Có mấy công an đứng hai bên?"),
+     "đơn vị đo phải neo ranh giới từ ('ha' nằm trong 'hai')")
+for _q in ["Con số được viết trên phần hông xe màu trắng là số mấy?",
+           "Hỏi phần thịt có trọng lượng bao nhiêu trong bảng nguyên liệu?",
+           "Loài cây (II) sinh trưởng tốt nhất khi độ mặn bao nhiêu phần nghìn?",
+           "Các học sinh đeo khăn quàng cổ màu gì?"]:
+    kiem(not qamod.la_cau_dem(_q), f"KHÔNG nhầm là câu đếm: {_q[:42]}")
+_su = (ROOT / "ui" / "search_ui.py").read_text(encoding="utf-8")
+kiem("qamod_la_dem(qa_ques)" in _su,
+     "ô Kiểu câu hỏi tự chọn theo câu hỏi, không mặc định luôn nhận dạng")
+# Bộ đo Q&A dựng từ đề THẬT: câu hỏi của ban tổ chức, khung đã mở ra nhìn.
+_bd = ROOT / "eval" / "queries_qa_dethat.csv"
+kiem(_bd.is_file(), "có bộ đo Q&A dựng từ câu hỏi đề thật")
+if _bd.is_file():
+    import pandas as _pd  # noqa: E402
+    _d = _pd.read_csv(_bd)
+    kiem(len(_d) >= 8, f"bộ đo đề thật có đủ câu (thấy {len(_d)})")
+    kiem("bang_chung" in _d.columns,
+         "mỗi câu ghi rõ BẰNG CHỨNG đã xác nhận đáp án bằng cách nào")
+    kiem(int((_d["kind"] == "nhìn").sum()) == 0,
+         "0 câu màu sắc — bộ đo cũ 80% là màu, đề thật thì không có câu nào")
+    _m = _pd.read_parquet(ROOT / "data" / "processed_hcmc2026"
+                          / "metadata.parquet")
+    _co = set(zip(_m.video_id, _m.frame_idx.astype(int)))
+    _thieu = [f"{r.video_id}/{r.frame_idx}" for r in _d.itertuples()
+              if (r.video_id, int(r.frame_idx)) not in _co]
+    kiem(not _thieu, f"mọi khung đáp án CÓ THẬT trong kho ({_thieu[:2]})")
 
 anh = next((ROOT / "data" / "hcmc2026").rglob("*.jpg"), None)
 if anh is None:
@@ -375,7 +667,7 @@ else:
     kiem(_dc < _dn, f"truy vấn toàn credit ({_dc:.2f}) thua nguyên liệu thật "
                     f"({_dn:.2f})")
 
-_nhan_o = [t.label for t in at.text_input]
+_nhan_o = [t.label for t in at.text_input] + [t.label for t in at.text_area]
 kiem(any("nguyên liệu" in (x or "") for x in _nhan_o),
      "thanh bên có ô tra bảng nguyên liệu")
 kiem(any("chữ trên khung" in (x or "") for x in _nhan_o),
@@ -454,7 +746,7 @@ for c in at.checkbox:
         kiem(c.value, "ô dịch mặc định BẬT (tiếng Việt thô mất 1/8 video)")
         c.set_value(False)          # tắt cho phép kiểm khỏi phụ thuộc mạng
         break
-at.text_area[0].set_value("hai bàn tay trộn nhân trong tô thuỷ tinh\n"
+o_theo_nhan(at, "MỖI DÒNG MỘT MỐC").set_value("hai bàn tay trộn nhân trong tô thuỷ tinh\n"
                           "cuốn bánh tráng thành cuốn chả giò\n"
                           "vớt chả giò vàng bằng vợt lưới")
 at = at.run()
@@ -473,7 +765,7 @@ kiem(any((s.label or "") == "Video sẽ nộp" for s in at.selectbox),
 print("\nkiểm kho bài nộp (100 dòng + .zip đúng thể lệ)…")
 import nopbai  # noqa: E402
 
-at.text_input[0].set_value("người phụ nữ đội nón lá đang hái dứa ngoài ruộng")
+o_theo_nhan(at, "Gợi ý từ ban tổ chức").set_value("người phụ nữ đội nón lá đang hái dứa ngoài ruộng")
 at = at.run()
 kiem(any("Lưu vào kho" in (b.label or "") for b in at.button),
      "tab KIS có nút 'Lưu vào kho'")
@@ -498,6 +790,21 @@ if kho:
     kiem(any("Kho bài nộp" in (h.value or "") for h in at.sidebar.subheader),
          "thanh bên có khu 'Kho bài nộp'")
 
+    # Kho từng chỉ sống trong session_state: Streamlit sập giữa giờ thi là mất
+    # sạch bài đã lưu. Nay mỗi lần Lưu phải để lại một bản trên đĩa.
+    tep_dia = KHO_TAM / ten
+    kiem(tep_dia.exists(), f"Lưu vào kho có ghi ra đĩa ({ten})")
+    if tep_dia.exists():
+        tren_dia = [x for x in tep_dia.read_text(
+            encoding="utf-8").splitlines() if x.strip()]
+        kiem(tren_dia == [str(d) for d in dong],
+             f"bản trên đĩa khớp từng dòng với kho ({len(tren_dia)} dòng)")
+    _sau = _anh_kho()
+    kiem(_sau == KHO_TRUOC,
+         "phép kiểm KHÔNG đụng vào kho bài nộp thật "
+         f"(thêm/sửa: {sorted(set(_sau.items()) - set(KHO_TRUOC.items()))[:3]}; "
+         f"mất: {sorted(set(KHO_TRUOC) - set(_sau))[:3]})")
+
     print("\nkiểm tab Nộp bài (xem trước + sửa)…")
     kiem(any((s.label or "") == "File đang soi" for s in at.selectbox),
          "có ô chọn file để soi")
@@ -520,6 +827,454 @@ if kho:
         loi2 = nopbai.kiem_tep(ten, d2)
         kiem(any("2 trường" in e for e in loi2),
              f"dòng hỏng do sửa tay bị bắt — {loi2[:1]}")
+# Nạp đề từ thư mục BTC: 30 câu mà copy tay thì mất cả buổi, và gõ lệch tên file
+# nộp là câu đó không được chấm.
+print()
+print("kiểm nạp đề từ thư mục BTC…")
+import nopbai as _nb  # noqa: E402
+DE_TAM = Path(tempfile.mkdtemp(prefix="de_kiem_"))
+(DE_TAM / "query-2-kis.txt").write_text("hai chiếc máy bay đậu trên đường băng",
+                                        encoding="utf-8")
+(DE_TAM / "query-10-kis.txt").write_text("người phụ nữ đội nón lá hái dứa",
+                                         encoding="utf-8")
+(DE_TAM / "query-3-qa.txt").write_text("một con mèo nằm trên ghế", encoding="utf-8")
+(DE_TAM / "query-4-trake.txt").write_text("trộn nhân\ncuốn bánh", encoding="utf-8")
+
+_ten = [p.stem for p in _nb.tep_de(DE_TAM)]
+kiem(_ten == ["query-2-kis", "query-3-qa", "query-4-trake", "query-10-kis"],
+     f"sắp đề theo SỐ chứ không theo chữ (thấy {_ten})")
+kiem(_nb.dang_cua("query-10-kis") == "kis"
+     and _nb.dang_cua("query-3-qa") == "qa"
+     and _nb.dang_cua("query-4-trake") == "trake",
+     "đọc đúng dạng câu từ tên file")
+
+os.environ["THU_MUC_DE"] = str(DE_TAM)
+at_de = AppTest.from_file(str(UI), default_timeout=600).run()
+kiem(any("Đề thi" in (h.value or "") for h in at_de.subheader),
+     "thanh bên có khu 'Đề thi'")
+_nut = [b for b in at_de.button if b.label.endswith("query-10-kis")]
+kiem(bool(_nut), "mỗi file đề là một nút bấm")
+if _nut:
+    at_de = _nut[0].click().run()
+    def _tt(app, k):
+        try:
+            return app.session_state[k]
+        except Exception:
+            return None
+    kiem(_tt(at_de, "kis_q") == "người phụ nữ đội nón lá hái dứa",
+         "bấm nút đề thì câu tự vào ô KIS")
+    kiem(_tt(at_de, "ten_kis") == "query-10-kis",
+         f"tên file nộp tự đặt khớp tên đề (thấy {_tt(at_de, 'ten_kis')!r})")
+    kiem(any("⬜ query-2-kis" in b.label for b in at_de.button),
+         "câu chưa làm hiện dấu ⬜")
+os.environ.pop("THU_MUC_DE", None)
+
+# ---- giữ lượt dịch ---------------------------------------------------
+# Endpoint Google chặn theo IP khi gọi dồn. Một câu 4 cảnh trước đây tiêu 5
+# lượt (câu chính + từng cảnh) và kho chỉ nằm trong RAM nên khởi động lại là
+# mất sạch. Đo trên 18 câu đề thật: một vòng gõ đề 49 lượt -> 18.
+import json as _js  # noqa: E402
+import time as _tt  # noqa: E402
+import urllib.error as _ue  # noqa: E402
+import urllib.request as _ur  # noqa: E402
+import translate as _tr  # noqa: E402
+
+_tep = ROOT / "data" / "kernel_out" / "dich_cache.json"
+kiem(_tr.TEP_KHO == _tep or str(_tr.TEP_KHO).endswith("dich_cache.json"),
+     "kho dịch nằm trên ĐĨA, không chỉ trong RAM")
+
+_luu_cache = dict(_tr._CACHE)
+_luu_ghi = _tr.ghi_kho
+_luu_gemini = _tr.dich_gemini
+_luu_urlopen = _ur.urlopen
+_luu_hong, _luu_mo = _tr._hong_lien_tiep, _tr._mo_lai_luc
+try:
+    _tr.ghi_kho = lambda: None
+    _tr.dich_gemini = lambda t: None
+
+    # 1. gộp: n câu chưa có trong kho chỉ tốn MỘT lượt
+    _tr._CACHE.clear()
+    _tr.dong_lai_cau_dao()
+    _dem = {"n": 0}
+
+    def _gia(*a, **k):
+        _dem["n"] += 1
+        q = a[0] if a else k.get("url")
+        import urllib.parse as _up
+        goc = _up.unquote(str(q).split("&q=")[-1])
+        doan = [[d + chr(10), d] for d in goc.split(chr(10))]
+        doan[-1][0] = doan[-1][0].rstrip(chr(10))
+
+        class _R:
+            def read(self_):
+                return _js.dumps([[[x[0], x[1]] for x in doan]]).encode("utf-8")
+
+            def __enter__(self_):
+                return self_
+
+            def __exit__(self_, *e):
+                return False
+        return _R()
+
+    _ur.urlopen = _gia
+    _ra = _tr.dich_nhieu(["cảnh một", "cảnh hai", "cảnh ba", "cảnh bốn"])
+    kiem(_dem["n"] == 1, "4 cảnh chỉ tốn MỘT lượt gọi, không phải bốn")
+    kiem(_ra == ["cảnh một", "cảnh hai", "cảnh ba", "cảnh bốn"],
+         "gộp rồi tách lại theo dấu xuống dòng vẫn đúng thứ tự từng cảnh")
+    _dem["n"] = 0
+    kiem(_tr.dich_nhieu(["cảnh một", "cảnh hai"]) == ["cảnh một", "cảnh hai"]
+         and _dem["n"] == 0, "câu đã dịch rồi thì KHÔNG tốn lượt nữa")
+
+    # 2. lệch dòng thì lùi về từng câu, tuyệt đối không ghép nhầm cảnh
+    _tr._CACHE.clear()
+    _goi = {"n": 0}
+
+    def _lech(q, timeout=10.0, retries=3):
+        _goi["n"] += 1
+        return "MOT-DONG" if chr(10) in q else "rieng"
+    _tr._goi_mang, _luu_goi = _lech, _tr._goi_mang
+    _r2 = _tr.dich_nhieu(["a", "b", "c"])
+    kiem(_r2 == ["rieng", "rieng", "rieng"] and _goi["n"] == 4,
+         "số dòng trả về không khớp thì lùi về dịch từng câu, không ghép bừa")
+    _tr._goi_mang = _luu_goi
+
+    # 3. gặp 429 thì thôi, đừng gọi lại — gọi lại là kéo dài lệnh chặn
+    _tr._CACHE.clear()
+    _tr.dong_lai_cau_dao()
+    _dem["n"] = 0
+
+    def _n429(*a, **k):
+        _dem["n"] += 1
+        raise _ue.HTTPError("u", 429, "Too Many Requests", {}, None)
+    _ur.urlopen = _n429
+    _tr.to_english("một câu")
+    kiem(_dem["n"] == 1, "gặp 429 thì KHÔNG thử lại (trước là 3 lượt)")
+
+    # 4. cầu dao ngắt rồi phải TỰ mở lại: chặn thoáng qua mà mất Google cả
+    #    buổi thi thì lỗ, Google 0,7827 còn Gemini 0,7556.
+    _tr.to_english("câu khác")
+    kiem(not _tr.mach_mang_con_song(), "hỏng liên tiếp thì ngắt mạch, thôi gọi")
+    _tr._mo_lai_luc = _tt.time() - 1
+    kiem(_tr.mach_mang_con_song(), "nghỉ đủ lâu thì tự mở lại thử một lượt")
+finally:
+    _ur.urlopen = _luu_urlopen
+    _tr.ghi_kho = _luu_ghi
+    _tr.dich_gemini = _luu_gemini
+    _tr._CACHE.clear()
+    _tr._CACHE.update(_luu_cache)
+    _tr._hong_lien_tiep, _tr._mo_lai_luc = _luu_hong, _luu_mo
+
+_su8 = (ROOT / "ui" / "search_ui.py").read_text(encoding="utf-8")
+kiem("nong_dich([query_loc] + chuoi.tach_canh(query_loc))" in _su8,
+     "tab KIS dịch câu chính và các cảnh trong MỘT lượt")
+kiem("nong_dich(goc)" in _su8, "tab TRAKE dịch mọi mốc trong MỘT lượt")
+kiem("nong_dich([loccau.bo_nhieu(qa_desc.strip()), qa_ques.strip()])" in _su8,
+     "tab Q&A dịch mô tả và câu hỏi trong MỘT lượt")
+kiem("mach_mang_con_song()" in _su8,
+     "giao diện BÀY RA khi đường Google bị chặn, không lùi im lặng")
+
+# ---- tab Q&A: dịch câu, và kênh CÂU HỎI ------------------------------
+# Tab KIS vốn dịch, tab Q&A thì đưa thẳng tiếng Việt vào search(). Đo trên
+# 8 câu hỏi thật, cho sẵn đúng video, rổ 30: mô tả 5/8 khi để tiếng Việt,
+# 6/8 khi đã dịch. Thêm kênh câu hỏi xen kẽ thì lên 8/8, và bộ 50 câu tự
+# dựng giữ nguyên 49/50 — không mất gì.
+_su7 = (ROOT / "ui" / "search_ui.py").read_text(encoding="utf-8")
+kiem("cau_hoi: str | None = None" in _su7,
+     "search() nhận thêm kênh CÂU HỎI")
+_tt = _su7[_su7.index("def search("):]
+_tt = _tt[:_tt.index("\n@st.cache_data")]
+# Điều kiện đã ĐO là "trong đúng video". Bật kênh câu hỏi trên toàn kho là
+# chưa đo — câu hỏi rất chung ("số nào") nên dễ kéo về khung bất kỳ.
+kiem("if trong_video and cau_hoi" in _tt,
+     "kênh câu hỏi CHỈ bật khi đã bó vào một video — đúng điều kiện đã đo")
+kiem("xen.append(z)" in _tt,
+     "xen kẽ hai thứ tự, không cộng điểm (cộng thì thua ở cả hai bộ)")
+kiem('preprocess_query(loccau.bo_nhieu(qa_desc.strip())' in _su7,
+     "tab Q&A lọc rồi DỊCH mô tả trước khi tìm, như tab KIS")
+kiem("cau_hoi=_qh" in _su7, "câu hỏi đã dịch được truyền vào search()")
+kiem('key="qa_dich"' in _su7, "người thi tắt được việc dịch ở tab Q&A")
+# Xen kẽ làm điểm không còn giảm đều; công thức cảnh báo rổ giả định thế.
+import rerank as _rr  # noqa: E402
+kiem(not _rr.basket_uncertain([1.0, 0.2, 0.9, 0.3], shallow=4),
+     "cảnh báo rổ chịu được thứ tự KHÔNG giảm dần, không báo động khống")
+kiem(_rr.basket_uncertain([1.0, 0.99, 0.98, 0.97], shallow=4),
+     "cảnh báo rổ vẫn bắt được rổ có điểm sát nhau")
+
+# ---- rổ Q&A bó vào MỘT video ----------------------------------------
+# Khung trả lời được câu hỏi thường không phải khung khớp mô tả — nó ở chỗ
+# có bảng nguyên liệu hay biển hiệu. Đo trên 8 câu hỏi THẬT, tính trên các
+# câu mà video đã đúng: rổ 30 ảnh trong video chứa đáp án 4/5, rổ toàn kho
+# chỉ 2/5. Bộ 50 câu tự dựng thì hoà 23/23 — nhãn của nó đặt ngay tại cảnh
+# được tả nên không nhìn thấy hiện tượng.
+_su6 = (ROOT / "ui" / "search_ui.py").read_text(encoding="utf-8")
+kiem("trong_video: str | None = None" in _su6,
+     "search() nhận được phạm vi MỘT video")
+_than_tim2 = _su6[_su6.index("def search("):]
+_than_tim2 = _than_tim2[:_than_tim2.index("\n@st.cache_data")]
+kiem("if trong_video:" in _than_tim2,
+     "search() thật sự bó ứng viên vào video ấy")
+kiem("np.isfinite(tong[top])" in _than_tim2,
+     "bó xong phải LỌC -inf, không thì rổ đầy khung của video khác")
+kiem("trong_video=qa_bo_video" in _su6,
+     "tab Q&A truyền video đã đánh dấu vào search()")
+# Canh bạc được-ăn-cả: bó nhầm video là mất trắng, nên chỉ bật khi CÓ đánh
+# dấu, và phải để người thi tắt được.
+_i_mark = _su6.index("qa_bo_video = None")
+_khoi_bo = _su6[_i_mark:_su6.index("qa_uu_tien = st.checkbox(")]
+kiem("if qa_marked:" in _khoi_bo,
+     "CHỈ bó rổ khi người thi đã đánh dấu khung — không tự đoán video")
+kiem("st.checkbox(" in _khoi_bo,
+     "người thi tắt được việc bó rổ (bó nhầm video là mất trắng)")
+
+# ---- soi lại khung sắp nộp -------------------------------------------
+# 5/18 khung KIS đội nộp ở đề thật vòng 2 SAI HẲN, 3 khung nữa đúng đoạn
+# sai khoảnh khắc. Nguồn lỗi lớn nhất đo được, và nó nằm ở khâu NGƯỜI chọn
+# khung. Bày DANH SÁCH chi tiết, không bày phán quyết.
+import soikhung as _sk  # noqa: E402
+_tho_gach = ("- Áo đỏ: CO\n- Nón trắng: KHONG (đội mũ xanh)\n\nTHIEU")
+_m, _p = _sk._tach(_tho_gach)
+kiem(len(_m) == 2 and _m[0][1] and not _m[1][1] and _p == "THIEU",
+     "đọc được danh sách kiểu gạch đầu dòng, giữ cả lý do")
+# Model đổi sang danh sách ĐÁNH SỐ tuỳ lúc — bắt sót là mất 8/18 phán quyết.
+_tho_so = "1. Áo đỏ: CO\n2. Nón trắng: KHONG\n\nDUNG"
+kiem(len(_sk._tach(_tho_so)[0]) == 2,
+     "đọc được cả danh sách ĐÁNH SỐ, không chỉ gạch đầu dòng")
+kiem(_sk._tach("")[0] == [] and _sk._tach(None)[0] == [],
+     "văn bản rỗng thì ra danh sách rỗng, không nổ")
+kiem([t for t, _ in _sk.thieu({"muc": _m})] == ["Nón trắng"],
+     "thieu() chỉ trả những chi tiết KHÔNG thấy")
+# Ngưỡng đếm: bắt 8/8 khung có vấn đề, báo nhầm 2/10 — hơn hẳn phán quyết
+# của chính model (5/10 báo nhầm).
+kiem(_sk.dang_ngo({"muc": [("a", False, ""), ("b", True, "")]}),
+     "một nửa chi tiết không thấy thì đã đáng dừng lại xem")
+kiem(not _sk.dang_ngo({"muc": [("a", False, ""), ("b", True, ""),
+                               ("c", True, "")]}),
+     "thiếu 1/3 chi tiết thì chưa báo động")
+kiem(not _sk.dang_ngo({"muc": []}) and not _sk.dang_ngo({}),
+     "không soi được thì im lặng, không báo động khống")
+_su5 = (ROOT / "ui" / "search_ui.py").read_text(encoding="utf-8")
+_than_sk = _su5[_su5.index("def _bang_soi_khung("):]
+_than_sk = _than_sk[:_than_sk.index("\ndef _bang_goi_ten(")]
+kiem("st.button(" in _than_sk,
+     "người thi tự bấm — mỗi lần soi tốn một lời gọi VLM có ảnh")
+kiem("phan_quyet" not in _than_sk,
+     "KHÔNG bày phán quyết của model (báo nhầm 5/10 khung tốt)")
+kiem("except Exception" in _than_sk,
+     "hết khoá hay mất mạng thì báo, không làm hỏng cả lượt tìm")
+kiem("_bang_soi_khung(query_vi.strip() or query, hits)" in _su5,
+     "bảng soi nhận câu TIẾNG VIỆT — đề viết tiếng Việt")
+
+# ---- bộ đo KIS mức KHUNG dựng từ đề thật ----------------------------
+# 18/19 câu KIS vòng 2 đã mở ảnh ra nhìn: chỉ 10 khung đội nộp thật sự cho
+# thấy cảnh đề tả, 3 khung đúng đoạn sai khoảnh khắc, 5 khung sai hẳn. Bộ
+# này chỉ giữ 10 câu xác nhận được — nhãn sai thì thà không có.
+import pandas as _pdv  # noqa: E402
+_bk = ROOT / "eval" / "queries_kis_dethat.csv"
+kiem(_bk.is_file(), "có bộ đo KIS mức KHUNG dựng từ đề thật")
+if _bk.is_file():
+    _dk = _pdv.read_csv(_bk)
+    kiem(len(_dk) >= 10, f"đủ câu (thấy {len(_dk)})")
+    kiem("bang_chung" in _dk.columns,
+         "mỗi câu ghi rõ NHÌN THẤY GÌ trong ảnh, không chỉ ghi đúng/sai")
+    kiem(int(_dk.bang_chung.str.len().min()) > 20,
+         "bằng chứng viết đủ dài để kiểm lại được, không phải dấu tích")
+    _mk = _pdv.read_parquet(ROOT / "data" / "processed_hcmc2026"
+                            / "metadata.parquet")
+    _cok = set(zip(_mk.video_id, _mk.frame_idx.astype(int)))
+    _thieuk = [f"{r.video_id}/{r.frame_idx}" for r in _dk.itertuples()
+               if (r.video_id, int(r.frame_idx)) not in _cok]
+    kiem(not _thieuk, f"mọi khung nhãn CÓ THẬT trong kho ({_thieuk[:2]})")
+    kiem(bool((_dk.frame_idx_min <= _dk.frame_idx).all()
+              and (_dk.frame_idx <= _dk.frame_idx_max).all()),
+         "khoảng hợp lệ bao đúng khung nhãn")
+    # Những câu đã soi và LOẠI thì không được lẻn vào bộ.
+    _loai = {"p2-1-kis", "p2-2-kis", "p2-5-kis", "p2-6-kis", "p2-10-kis",
+             "p2-11-kis", "p2-15-kis", "p2-18-kis", "p2-20-kis"}
+    kiem(not (set(_dk.query_id) & _loai),
+         "câu đã soi và loại KHÔNG lẻn vào bộ (5 khung nộp sai hẳn)")
+    kiem(int((_dk.go_tay == 1).sum()) == 0,
+         "0 khung gõ tay lọt vào — cả 3 khung KIS gõ tay đều trượt phép soi")
+
+# ---- gọi tên cái mà đề chỉ TẢ ---------------------------------------
+# Ban tổ chức cố tình không gọi tên vật; kho lại đánh chỉ mục theo TÊN.
+# Đo trên 30 câu đề thật: cứu ĐÚNG MỘT câu (p2-22, không kênh nào thấy ->
+# hạng 18) nhưng TRUNG BÌNH thua cả câu gốc (thẻ hạng-1 1/14 -> 0/14, lời
+# nói 3/14 -> 1/14). Nên: người thi tự bấm, và tuyệt đối không trộn điểm.
+import goiten as _gt  # noqa: E402
+kiem(_gt._tach("mực ống, mực lá") == ["mực ống", "mực lá"],
+     "tách tên theo dấu phẩy")
+kiem(_gt._tach("-") == [] and _gt._tach("") == [] and _gt._tach("—") == [],
+     "đề đã gọi tên rõ (model trả dấu gạch) thì ra danh sách rỗng")
+kiem(_gt._tach("1. mực ống\n2. bạch tuộc") == ["mực ống", "bạch tuộc"],
+     "bóc số thứ tự và xuống dòng khi model không nghe lời dặn")
+kiem(len(_gt._tach(", ".join(f"t{_i}" * 2 for _i in range(20))))
+     == _gt.MAX_TEN,
+     f"chặn trần {_gt.MAX_TEN} tên, model trả tràn thì cắt")
+kiem(_gt.tra([]) == {"the": [], "asr": []},
+     "không có tên thì không tra gì, không nổ")
+
+_su4 = (ROOT / "ui" / "search_ui.py").read_text(encoding="utf-8")
+_than_gt = _su4[_su4.index("def _bang_goi_ten("):]
+_than_gt = _than_gt[:_than_gt.index("\n@st.cache_data")]
+kiem("st.button(" in _than_gt,
+     "người thi tự bấm — mỗi lần đoán tên tốn một lời gọi API")
+# Chỗ nguy hiểm nhất: trộn điểm tên đoán vào xếp hạng. Đã đo là TRUNG BÌNH
+# thua cả câu gốc, nên trộn là lỗ.
+kiem(all(_x not in _than_gt for _x in ("tong", "hits[\"score\"]", "score\"]")),
+     "bảng tên đoán KHÔNG đụng vào điểm xếp hạng")
+kiem("except Exception" in _than_gt,
+     "hết khoá hay mất mạng thì báo, không làm hỏng cả lượt tìm")
+kiem("_bang_goi_ten(query_vi.strip() or query, hits)" in _su4,
+     "bảng nhận câu TIẾNG VIỆT (đề tả bằng tiếng Việt, kho chữ cũng vậy)")
+
+# ---- mắt xích: khung nào đóng vai cảnh nào ---------------------------
+# Máy chấm điểm cho khung làm CẢNH ĐẦU rồi nộp chính nó, nhưng trên 14 câu
+# nhiều cảnh của đề thật chỉ 8/14 đáp án ở cảnh đầu — 6/14 ở cảnh sau, mà
+# mắt xích rơi trúng với lệch trung vị 0,8 s.
+kiem(hasattr(_ch, "mat_xich"), "có hàm dựng lại vết mắt xích của chuỗi")
+_xau = 0
+for _ in range(40):
+    _n = int(_rng.integers(3, 14))
+    _K = int(_rng.integers(2, 5))
+    _vv = _np.sort(_rng.integers(0, 3, _n))
+    _tt = _np.concatenate([_np.sort(_rng.random((_vv == u).sum()) * 200)
+                           for u in _np.unique(_vv)]).astype(_np.float32)
+    _ss = _rng.random((_K, _n)).astype(_np.float32)
+    _w = float(_rng.choice([5.0, 30.0, 90.0]))
+    _d, _vet = _ch.mat_xich(_ss, _vv, _tt, cua_so=_w)
+    if not _np.allclose(_d, _ch.diem_chuoi(_ss, _vv, _tt, cua_so=_w),
+                        atol=1e-6):
+        _xau += 1
+        continue
+    for _i in range(_n):
+        _m = _vet[_i]
+        if _m[0] < 0:
+            continue
+        if int(_m[0]) != _i:
+            _xau += 1
+            break
+        if any(_vv[_m[_k]] != _vv[_i] for _k in range(_K)):
+            _xau += 1
+            break
+        if any(_tt[_m[_k + 1]] - _tt[_m[_k]] > _w + 1e-6
+               or _m[_k + 1] <= _m[_k] for _k in range(_K - 1)):
+            _xau += 1
+            break
+        _tong = sum(float(_ss[_k][_m[_k]]) for _k in range(_K)) / _K
+        if abs(_tong - float(_d[_i])) > 1e-5:
+            _xau += 1
+            break
+kiem(_xau == 0,
+     f"vết mắt xích: đúng video, tăng dần theo thời gian, trong cửa sổ, "
+     f"tổng khớp điểm ({_xau} ca sai)")
+
+_su3 = (ROOT / "ui" / "search_ui.py").read_text(encoding="utf-8")
+kiem("def bang_mat_xich(" in _su3 and "bang_mat_xich(hits)" in _su3,
+     "giao diện bày dãy khung của chuỗi ra cho người thi nhìn")
+kiem("dong_nop_kis(nop, _nop_mx)" in _su3,
+     "danh sách nộp đi qua hàm riêng, có chỗ bật/tắt xen mắt xích")
+
+# Phép xếp nằm ở nopbai nên KIỂM THẲNG được, không cần dựng Streamlit.
+import nopbai as _nb  # noqa: E402
+kiem(_nb.xen_mat_xich([10, 20, 30]) == [10, 20, 30],
+     "không có mắt xích thì danh sách nộp giữ nguyên thứ tự điểm")
+kiem(_nb.xen_mat_xich([10, 20], [(10, 11, 12), (20, 21, 22)])
+     == [10, 11, 12, 20, 21, 22],
+     "xen mắt xích theo ĐÚNG thứ tự cảnh, hết neo này mới sang neo sau")
+kiem(_nb.xen_mat_xich([10, 11], [(10, 11, 12), (11, 12, 13)])
+     == [10, 11, 12, 13],
+     "hai dãy chồng nhau thì bỏ trùng, không nộp một khung hai lần")
+kiem(_nb.xen_mat_xich([10, 20], [(-1, -1, -1), (20, 21, 22)])
+     == [10, 20, 21, 22],
+     "neo không dựng nổi dãy thì vẫn nộp chính nó, không bị bỏ rơi")
+kiem(len(_nb.xen_mat_xich(list(range(0, 400, 3)),
+                          [(i, i + 1, i + 2) for i in range(0, 400, 3)]))
+     == 100,
+     "danh sách nộp vẫn đúng trần 100 dòng sau khi xen")
+
+# ---- chấm chuỗi: ép thứ tự ĐỦ, và gộp đúng thang điểm ----------------
+# Bản trước lấy max độc lập cho từng cảnh nên "A rồi B rồi C" chấm y hệt
+# "A rồi C rồi B"; và giao diện cộng zscore(nền) với cosine thô nên điểm
+# chuỗi chỉ còn ~1/30 trọng lượng. Đo lại: hạng-1 4/14 -> 8/14 đề thật.
+import numpy as _np  # noqa: E402
+
+
+# Thứ tự phải ĐƯỢC ÉP: đảo hai cảnh sau thì điểm phải đổi.
+_v = _np.zeros(4, dtype=_np.int64)
+_p = _np.array([0.0, 5.0, 10.0, 15.0], dtype=_np.float32)
+_S = _np.array([[9., 0., 0., 0.],
+                [0., 9., 0., 0.],
+                [0., 0., 9., 0.]], dtype=_np.float32)
+_dung = _ch.diem_chuoi(_S, _v, _p, cua_so=30.0)[0]
+_dao = _ch.diem_chuoi(_S[[0, 2, 1]], _v, _p, cua_so=30.0)[0]
+kiem(_dung > _dao,
+     f"đảo thứ tự hai cảnh SAU thì điểm phải tụt ({_dung:.3f} > {_dao:.3f})")
+
+# Dãy đứt giữa chừng KHÔNG được ăn điểm của những cảnh đã khớp.
+_S2 = _np.array([[9., 0.], [0., 9.], [0., 0.]], dtype=_np.float32)
+_v2 = _np.zeros(2, dtype=_np.int64)
+_p2 = _np.array([0.0, 5.0], dtype=_np.float32)
+kiem(float(_ch.diem_chuoi(_S2, _v2, _p2, cua_so=30.0)[0]) == 0.0,
+     "câu ba cảnh mà video chỉ đủ chỗ hai cảnh thì ăn 0, không ăn nửa điểm")
+
+# Cửa sổ đo giữa hai cảnh LIỀN NHAU: ba cảnh cách nhau 20 s, cửa sổ 25 s
+# thì dựng được; nếu đo từ cảnh đầu (40 s > 25 s) thì đã hỏng.
+_p3 = _np.array([0.0, 20.0, 40.0], dtype=_np.float32)
+_v3 = _np.zeros(3, dtype=_np.int64)
+_S3 = _np.eye(3, dtype=_np.float32) * 9
+kiem(float(_ch.diem_chuoi(_S3, _v3, _p3, cua_so=25.0)[0]) > 0,
+     "cửa sổ tính giữa HAI CẢNH LIỀN NHAU, không phải từ cảnh đầu")
+
+# Gộp phải kéo hai vế về cùng thang, nếu không điểm chuỗi bị nén mất.
+kiem(hasattr(_ch, "gop"), "có hàm gộp dùng chung cho bộ đo và giao diện")
+_a = _np.concatenate([_np.zeros(999), [50.0]])      # thang lớn
+_b = _np.concatenate([_np.zeros(999), [0.01]])      # thang bé
+_g = _ch.gop(_a, _b, alpha=_ch.ALPHA_NEN)
+# Dung sai 1e-4 chứ không 1e-6: epsilon 1e-9 trong _chuan kéo lệch chuẩn
+# của mảng thang bé xuống 0,9999968.
+kiem(_g[999] > 0 and abs(_np.std(_ch._chuan(_b)) - 1.0) < 1e-4,
+     "gộp chuẩn hoá cả hai vế nên vế thang bé không bị nén mất")
+_su2 = (ROOT / "ui" / "search_ui.py").read_text(encoding="utf-8")
+_than_tim = _su2[_su2.index("def search("):]
+_than_tim = _than_tim[:_than_tim.index("\n@st.cache_data")]
+kiem("chuoi.gop(tong," in _than_tim
+     and "tong + chuoi.diem_chuoi" not in _than_tim
+     and "tong + chuoi.mat_xich" not in _than_tim,
+     "giao diện gộp qua chuoi.gop chứ không cộng thẳng điểm chuỗi")
+_ev = (ROOT / "eval" / "evaluate.py").read_text(encoding="utf-8")
+kiem("chuoi.gop(" in _ev, "bộ đo cũng gộp qua chuoi.gop — cùng một phép")
+# Che video bị loại phải nằm SAU khi gộp: chuẩn hoá mảng có -inf ra nan.
+kiem(_su2.index("chuoi.gop(tong,") < _su2.index("-np.inf, tong)"),
+     "che video bị loại nằm SAU bước gộp (chuẩn hoá -inf thì ra nan)")
+
+# ---- mở một video ra thì xếp khung theo ĐIỂM, không theo thời gian ----
+# Video trung vị 281 khung. Xếp theo thời gian thì khung đáp án nằm ở ô thứ
+# 111 (trung vị, 81 truy vấn); xếp theo điểm thì về ô thứ 1 và 91,4% nằm
+# trong 5 ô đầu. Đây là chỗ tốn thời gian nhất của người thi.
+_su = (ROOT / "ui" / "search_ui.py").read_text(encoding="utf-8")
+kiem("def diem_ca_video(" in _su,
+     "có hàm chấm MỌI khung của một video")
+kiem("def show_videos(hits, ncol, query" in _su,
+     "show_videos nhận câu truy vấn để chấm lại trong video")
+kiem("show_videos(hits, cols_per_row, query=query)" in _su,
+     "chỗ gọi có truyền câu truy vấn ĐÃ DỊCH vào")
+kiem('"Xếp khung theo"' in _su, "có ô chọn cách xếp khung")
+_khoi = _su[_su.index("def show_videos("):]
+_khoi = _khoi[:_khoi.index("st.title(")]
+kiem(_khoi.index('"điểm khớp (nên dùng)"') < _khoi.index('"thời gian"'),
+     "xếp theo ĐIỂM là lựa chọn mặc định (đứng đầu danh sách)")
+kiem('sort_values("score", ascending=False)' in _khoi,
+     "thật sự xếp giảm dần theo điểm chứ không chỉ bày ra ô chọn")
+kiem("except Exception" in _khoi,
+     "chấm lại mà nổ thì vẫn còn bảng khung (có chắn ngoại lệ)")
+# Chấm lại phải phủ MỌI khung, không chỉ khung đã lọt vào kết quả tìm kiếm.
+import pandas as _pdv  # noqa: E402
+_m = _pdv.read_parquet(ROOT / "data" / "processed_hcmc2026"
+                       / "metadata.parquet")
+_v = _m["video_id"].iloc[0]
+_n = int((_m["video_id"] == _v).sum())
+kiem(_n > 50, f"video mẫu {_v} đủ dài để việc xếp có ý nghĩa ({_n} khung)")
+
 
 print("\n" + ("🔴 CÓ LỖI: " + " · ".join(loi) if loi
               else "✅ giao diện dựng được, bố cục đúng thiết kế"))

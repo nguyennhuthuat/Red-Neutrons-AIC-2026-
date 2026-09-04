@@ -4,6 +4,7 @@ import csv
 import io
 import json
 import os
+import re
 import sys
 
 import numpy as np
@@ -17,6 +18,7 @@ os.environ.setdefault("VLM_CHO_429", "0")
 
 import corpus  # noqa: E402  (nạp metadata + sửa đường dẫn ảnh cho đúng máy)
 import chuoi  # noqa: E402  (tách câu tả nhiều cảnh, chấm theo thứ tự)
+import loccau  # noqa: E402  (lọc khung dẫn chuyện, đếm token)
 import ensemble  # noqa: E402  (encoder phụ, cộng điểm trên toàn corpus)
 import rerank  # noqa: E402  (tầng re-rank, xem src/rerank.py)
 
@@ -41,18 +43,42 @@ def ham_nong_dich() -> str:
     """Thử đường dịch NGAY khi mở app, để câu đầu tiên không phải chờ.
 
     Endpoint Google chặn theo IP khi gọi dồn (hỏng 6/6 ngày 28/08). Khi đó phải
-    nạp mô hình trên máy, mất ~20 giây — bắt người thi chờ giữa câu hỏi đầu là
-    mất thời gian ở đúng lúc đắt nhất.
+    dựng client Gemini, mất ~8 giây — bắt người thi chờ giữa câu hỏi đầu là mất
+    thời gian ở đúng lúc đắt nhất.
     """
     import translate as tr
     tr.to_english("một người đi bộ trên đường")
     return tr.NGUON_CUOI
 
 
+def nong_dich(cac_cau, bat: bool = True) -> None:
+    """Dịch sẵn cả cụm bằng MỘT lượt gọi, để preprocess_query sau chỉ ăn kho.
+
+    Câu 4 cảnh trước đây tiêu 5 lượt (câu chính + từng cảnh) và sửa một chữ là
+    5 lượt mới. Google giữ nguyên dấu xuống dòng nên gộp lại được.
+    """
+    if not bat:
+        return
+    ds = [c for c in (cac_cau or []) if c and str(c).strip()]
+    if len(ds) < 2:
+        return
+    import translate as tr
+    try:
+        tr.dich_nhieu(ds)
+    except Exception:
+        pass
+
+
 def qamod_goiy(cau: str) -> int:
     """Cỡ rổ nên dùng cho câu hỏi này — xem qa.ro_goi_y."""
     import qa as _q
     return _q.ro_goi_y(cau or "")
+
+
+def qamod_la_dem(cau: str) -> bool:
+    """Câu này có phải ĐẾM VẬT không — xem qa.la_cau_dem."""
+    import qa as _q
+    return _q.la_cau_dem(cau or "")
 import nopbai  # noqa: E402  (đóng gói .zip đúng cấu trúc thể lệ)
 
 DATASET = "hcmc2026"
@@ -106,13 +132,21 @@ def preprocess_query(query: str, mode: str = "vi") -> tuple[str, str | None]:
     import translate as tr
     en = tr.to_english(query)
     if en is None:
-        return query, ("⚠ dịch hỏng CẢ hai đường (mạng lẫn ngoại tuyến) — đang "
-                       "dùng câu tiếng Việt gốc. SigLIP2 vẫn đọc được tiếng "
-                       "Việt, chỉ kém hơn: 0,704 so với 0,780.")
+        # Không dịch được thì đưa thẳng tiếng Việt vào encoder: đo 28/08 được
+        # 0,7160, vẫn hơn mọi bản dịch hỏng (opus ngoại tuyến chỉ 0,5926).
+        return query, ("⚠ dịch hỏng cả hai đường (mạng lẫn Gemini) — đang dùng "
+                       "câu tiếng Việt gốc. SigLIP2 vẫn đọc được tiếng Việt, "
+                       "chỉ kém hơn: 0,716 so với 0,783.")
+    if tr.NGUON_CUOI == "kho":
+        # Đã dịch rồi thì không tiêu lượt nữa; kho nằm trên đĩa nên khởi động
+        # lại giao diện vẫn còn.
+        return en, f"→ dịch *(lấy từ kho, không tốn lượt)*: *{en}*"
+    if tr.NGUON_CUOI == "gemini":
+        # Endpoint Google chặn theo IP khi gọi dồn; Gemini còn 7 khoá sống và
+        # KIS vốn không tiêu API nên đây là chỗ tiêu hợp lý.
+        return en, f"→ dịch *(Gemini, mạng Google đang bị chặn)*: *{en}*"
     if tr.NGUON_CUOI == "ngoại tuyến":
-        # Endpoint Google chặn theo IP khi gọi dồn. Mô hình trên máy không cần
-        # mạng, không cần khoá API, nên phòng thi không bao giờ mất khâu dịch.
-        return en, f"→ dịch *(ngoại tuyến, trên máy)*: *{en}*"
+        return en, f"→ dịch *(ngoại tuyến, trên máy — kém, chỉ dùng khi bí)*: *{en}*"
     return en, f"→ dịch: *{en}*"
 
 
@@ -127,8 +161,12 @@ def encode_text(query: str) -> np.ndarray:
 
 def search(query: str, top_k: int, ens_w: float = 0.0,
            mark_rows: list[int] | None = None, beta: float = 0.4,
-           thuong_video: float = 3.0, canh: list[str] | None = None) -> pd.DataFrame:
+           thuong_video: float = 3.0, canh: list[str] | None = None,
+           cua_so: float = chuoi.CUA_SO,
+           trong_video: str | None = None,
+           cau_hoi: str | None = None) -> pd.DataFrame:
     meta = load_metadata()
+    vet = None
     qvec = encode_text(query)
 
     dim = load_features_ram().shape[1]
@@ -160,24 +198,179 @@ def search(query: str, top_k: int, ens_w: float = 0.0,
             vids = set(meta["video_id"].to_numpy()[mark_rows])
             tong = tong + thuong_video * np.isin(meta["video_id"].to_numpy(),
                                                  list(vids))
-        if loai:
-            tong = np.where(np.isin(meta["video_id"].to_numpy(), list(loai)),
-                            -np.inf, tong)
         if canh and len(canh) > 1:
             # Câu tả nhiều cảnh nối tiếp: chấm theo ĐÚNG THỨ TỰ thời gian.
             Sc = np.stack([(FR @ encode_text(c)[0]).astype(np.float32)
                            for c in canh])
-            tong = tong + chuoi.diem_chuoi(
+            # Qua chuoi.gop chứ KHÔNG cộng thẳng: vế nền đã chuẩn hoá
+            # (lệch chuẩn 1) còn điểm chuỗi là cosine thô (~0,03), cộng
+            # thẳng thì chuỗi chỉ còn ~1/30 trọng lượng.
+            _dc, vet = chuoi.mat_xich(
                 Sc, meta["video_id"].to_numpy(),
-                meta["pts_time"].to_numpy().astype(np.float32))
-        top = np.argsort(-tong, kind="stable")[:top_k]
+                meta["pts_time"].to_numpy().astype(np.float32),
+                cua_so=cua_so)
+            tong = chuoi.gop(tong, _dc)
+        # Che sau khi gộp: chuẩn hoá trên mảng có -inf thì ra nan.
+        if loai:
+            tong = np.where(np.isin(meta["video_id"].to_numpy(), list(loai)),
+                            -np.inf, tong)
+        # Bó vào một video: khung đáp án Q&A hay nằm ngoài cảnh được tả
+        # (thẻ nguyên liệu, biển hiệu). Đo trên 8 câu hỏi thật, khi video
+        # đã đúng: rổ 30 trong video được 4/5, rổ toàn kho chỉ 2/5.
+        if trong_video:
+            tong = np.where(meta["video_id"].to_numpy() == trong_video,
+                            tong, -np.inf)
+        top = np.argsort(-tong, kind="stable")
+        top = top[np.isfinite(tong[top])]
+        # Kênh CÂU HỎI, chỉ khi đã bó vào một video --- đó là điều kiện đã
+        # đo. Câu hỏi nhắc thẳng tới cái cần nhìn ("số trên hông xe",
+        # "bảng nguyên liệu") nên nó tìm ra khung mà mô tả bỏ sót; ngược
+        # lại nó mù với câu tả cảnh. Xen kẽ hai thứ tự giữ được cả hai:
+        # rổ 30 chứa khung đáp án 8/8 thay vì 6/8 (8 câu hỏi thật), và
+        # 49/50 trên bộ tự dựng — đúng bằng cách cũ, không mất gì.
+        if trong_video and cau_hoi and cau_hoi.strip():
+            dh = FR @ encode_text(cau_hoi.strip())[0]
+            dh = np.where(np.isfinite(tong), dh, -np.inf)
+            th = np.argsort(-dh, kind="stable")
+            th = th[np.isfinite(dh[th])]
+            xen, da = [], set()
+            for a, b in zip(th, top):
+                for z in (int(a), int(b)):
+                    if z not in da:
+                        da.add(z)
+                        xen.append(z)
+            top = np.asarray(xen, dtype=np.int64)
+        top = top[:top_k]
         scores, ids = tong[None, top], top[None, :]
     else:
         scores, ids = load_index().search(qvec, top_k)   # chỉ nạp khi thật cần
     hits = meta.iloc[ids[0]].copy()
     hits["score"] = scores[0]
     hits["row_id"] = ids[0]
-    return hits.reset_index(drop=True)
+    hits = hits.reset_index(drop=True)
+    # Mắt xích: khung nào đã đóng vai cảnh nào. Chỉ 8/14 khung đội nộp ở
+    # đề thật là gần cảnh ĐẦU — 6/14 rơi vào cảnh sau, nên phải bày ra.
+    if vet is not None:
+        hits["mat_xich"] = [tuple(int(x) for x in vet[i]) for i in ids[0]]
+    return hits
+
+
+@st.cache_data(show_spinner=False, max_entries=64)
+def _loi_noi_top(cau: str, lay: int = 200):
+    """Video nào được LỜI NÓI gọi tên, xếp theo điểm BM25 cao nhất trong video."""
+    import asr_tim
+    df = asr_tim.tim(cau, lay)
+    if df is None or len(df) == 0 or "video_id" not in df:
+        return []
+    g = df.groupby("video_id", sort=False)["diem"].max()
+    return [(v, float(d)) for v, d in g.sort_values(ascending=False).head(8).items()]
+
+
+def _goi_y_loi_noi(cau: str, hits) -> None:
+    """Ý kiến thứ hai từ lời nói. KHÔNG trộn vào điểm — chỉ bày ra để liếc."""
+    try:
+        top = _loi_noi_top(cau)
+    except Exception as exc:                    # thiếu parquet ASR, kho hỏng...
+        st.caption(f"kênh lời nói không dùng được — {exc}")
+        return
+    if not top:
+        return
+    co = set(hits["video_id"].to_numpy()[:10])
+    dong = " · ".join(
+        (f"**{v}**" if v not in co else v) + f" ({d:.1f})" for v, d in top[:6])
+    with st.expander(f"🎙 lời nói gọi tên {len(top)} video — "
+                     f"{sum(1 for v, _ in top if v not in co)} video CLIP chưa nêu"):
+        st.caption(dong)
+        st.caption("In đậm = video CLIP chưa xếp vào 10 hạng đầu. Đo trên 30 câu "
+                   "đề thật vòng 2: lời nói ra kết quả ở 15 câu, trúng đúng video "
+                   "ngay hạng 1 ở 7 câu (CLIP: 4 câu trong cùng nhóm ấy). Điểm "
+                   "KHÔNG được trộn vào xếp hạng — trộn đã đo là âm.")
+
+
+def _bang_soi_khung(cau: str, hits) -> None:
+    """Soi lại khung SẮP NỘP: chi tiết nào của đề không thấy trong ảnh.
+
+    Bày DANH SÁCH chi tiết chứ không bày phán quyết: đo trên 18 khung KIS
+    của đề thật, danh sách thì chính xác (nó chỉ ra p2-10 là bắp non chứ
+    không phải bông hẹ) còn phán quyết ``THIEU/SAI`` của model báo nhầm
+    5/10 khung tốt. Đếm chi tiết thiếu chỉ báo nhầm 2/10 mà vẫn bắt 8/8.
+    """
+    if hits is None or not len(hits):
+        return
+    h = hits.iloc[0]
+    anh = h.get("image_path", "")
+    with st.expander("🔍 Soi lại khung sắp nộp — chi tiết nào KHÔNG thấy"):
+        st.caption(f"Kiểm ô đầu tiên: **{h['video_id']}, "
+                   f"{int(h['frame_idx'])}**. Đo trên 18 khung KIS đề thật "
+                   f"vòng 2: 5 khung đội nộp SAI HẲN và 3 khung đúng đoạn "
+                   f"sai khoảnh khắc — nguồn lỗi lớn nhất, và nó nằm ở "
+                   f"khâu chọn khung chứ không phải ở mô hình.")
+        if st.button("Soi khung này (1 lời gọi có ảnh)", key="kis_soi"):
+            with st.spinner("Đang soi từng chi tiết ..."):
+                try:
+                    import soikhung
+                    st.session_state["kis_soi_kq"] = soikhung.soi(cau, anh)
+                except Exception as exc:      # hết khoá, mất mạng...
+                    st.session_state["kis_soi_kq"] = None
+                    st.caption(f"không soi được — {exc}")
+        kq = st.session_state.get("kis_soi_kq")
+        if not kq or not kq.get("muc"):
+            return
+        import soikhung
+        _th = soikhung.thieu(kq)
+        if soikhung.dang_ngo(kq):
+            st.warning(f"⚠️ {len(_th)}/{len(kq['muc'])} chi tiết KHÔNG "
+                       f"thấy trong khung này — nên xem lại trước khi nộp.")
+        for ten, co, ly in kq["muc"]:
+            st.markdown(("✅ " if co else ":red[❌] ") + ten
+                        + (f" — *{ly}*" if ly else ""))
+        st.caption("Danh sách này đáng tin hơn phán quyết tổng: đo được là "
+                   "phán quyết của model báo nhầm 5/10 khung tốt, còn đếm "
+                   "chi tiết thiếu chỉ báo nhầm 2/10 mà vẫn bắt đủ 8/8.")
+
+
+def _bang_goi_ten(cau: str, hits) -> None:
+    """Đoán TÊN vật mà đề chỉ tả, rồi tra lại bằng tên ấy.
+
+    Ban tổ chức cố tình không gọi tên --- p2-22 viết "nguyên liệu hải sản
+    màu trắng khứa vuông góc", thẻ nguyên liệu ghi "Mucong tuoi: 150g".
+    Người thi tự bấm vì mỗi lần tốn một lời gọi văn bản thuần, và vì trên
+    TRUNG BÌNH tên đoán thua cả câu gốc --- nó chỉ đáng dùng khi bí.
+    """
+    with st.expander("🏷️ Đoán tên vật rồi tra lại — dùng khi không kênh "
+                     "nào thấy gì"):
+        st.caption("Đề tả mà không gọi tên, còn kho đánh chỉ mục theo TÊN. "
+                   "Đo trên 30 câu đề thật: cứu được 1 câu từ chỗ không "
+                   "kênh nào thấy lên hạng 18 — nhưng trung bình thì THUA "
+                   "cả câu gốc, nên đừng dùng khi kết quả đang ổn.")
+        if st.button("Đoán tên (1 lời gọi văn bản)", key="kis_goiten"):
+            with st.spinner("Đang đoán tên ..."):
+                try:
+                    import goiten
+                    ten = goiten.de_xuat(cau)
+                    st.session_state["kis_ten"] = (ten, goiten.tra(ten))
+                except Exception as exc:      # hết khoá, mất mạng...
+                    st.session_state["kis_ten"] = None
+                    st.caption(f"không đoán được — {exc}")
+        kq = st.session_state.get("kis_ten")
+        if kq is None:
+            return
+        ten, bang = kq
+        if not ten:
+            st.caption("Đề đã gọi tên rõ hết — không có gì để đoán thêm.")
+            return
+        st.markdown("**tên đoán:** " + ", ".join(ten))
+        co = set(hits["video_id"].to_numpy()[:10])
+        for kenh, nhan in [("the", "🍳 thẻ nguyên liệu"), ("asr", "🎙 lời nói")]:
+            ds = bang.get(kenh) or []
+            if not ds:
+                st.caption(f"{nhan}: không có kết quả")
+                continue
+            st.caption(nhan + ": " + " · ".join(
+                (f"**{v}**" if v not in co else v) + f" ({d:.1f})"
+                for v, d in ds[:6]))
+        st.caption("In đậm = video CLIP chưa xếp vào 10 hạng đầu. Điểm "
+                   "KHÔNG trộn vào xếp hạng.")
 
 
 @st.cache_data(show_spinner=False, max_entries=512)
@@ -227,11 +420,76 @@ def kho() -> dict:
     return st.session_state.setdefault("kho", {})
 
 
+# Kho chỉ sống trong session_state: đóng tab hay Streamlit khởi động lại là
+# mất sạch bài đã lưu, phải tìm lại từ đầu giữa giờ thi. Nên ghi thêm ra đĩa.
+# Phép kiểm giao diện trỏ biến này sang thư mục tạm, để nó không ghi rác vào
+# kho bài nộp thật — một file thừa lẫn vào .zip là mất một trong ba lượt nộp.
+KHO_DIA = Path(os.environ.get("KHO_BAI_NOP") or (ROOT / "submission"))
+
+
 def luu_kho(ten: str, dong: list) -> str:
     ten = ten.strip()
     ten = ten if ten.endswith(".csv") else f"{ten}.csv"
     kho()[ten] = dong
+    ghi_dia(ten, dong)
     return ten
+
+
+def ghi_dia(ten: str, dong: list) -> None:
+    """Chép bài ra submission/ để phiên sau còn khôi phục được."""
+    try:
+        KHO_DIA.mkdir(parents=True, exist_ok=True)
+        (KHO_DIA / ten).write_text(
+            chr(10).join(str(d) for d in dong), encoding="utf-8")
+    except OSError:
+        pass
+
+
+def tep_tren_dia() -> list:
+    """File .csv đang nằm trên đĩa mà kho trong phiên chưa có."""
+    try:
+        co = sorted(x.name for x in KHO_DIA.glob("*.csv"))
+    except OSError:
+        return []
+    return [t for t in co if t not in kho()]
+
+
+def doc_dia(ten: str) -> list:
+    return [d for d in (KHO_DIA / ten).read_text(
+        encoding="utf-8").splitlines() if d.strip()]
+
+
+def xoa_dia(ten: str) -> None:
+    """Bỏ khỏi kho thì bỏ luôn trên đĩa, kẻo khôi phục lại đúng bài đã bỏ."""
+    try:
+        (KHO_DIA / ten).unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+# BTC phát đề dưới dạng file .txt một câu một file. Mở file, copy câu, dán vào,
+# rồi gõ lại tên file nộp cho khớp — nhân với 30 câu là mất cả buổi, và gõ lệch
+# một chữ trong tên file thì bài đó không được chấm.
+DE_DIA = Path(os.environ.get("THU_MUC_DE") or (ROOT / "dethi"))
+O_NHAP = {"kis": "kis_q", "qa": "qa_desc", "trake": "tk_moments"}
+
+
+def nap_de(p) -> str:
+    """Đổ nội dung file đề vào đúng ô nhập và đặt sẵn tên file nộp."""
+    dang = nopbai.dang_cua(p.stem) or "kis"
+    noi_dung = p.read_text(encoding="utf-8").strip()
+    if dang == "qa":
+        # BTC phát một khối liền: tả cảnh rồi mới hỏi. Khâu TÌM chỉ dùng phần
+        # tả, khâu TRẢ LỜI chỉ dùng câu hỏi — tách sẵn, bớt một thao tác tay và
+        # bớt ~12 token nhiễu trong vector tìm kiếm.
+        mo_ta, hoi = loccau.tach_hoi(noi_dung)
+        st.session_state["qa_desc"] = mo_ta
+        if hoi:
+            st.session_state["qa_ques"] = hoi
+    else:
+        st.session_state[O_NHAP[dang]] = noi_dung
+    st.session_state[f"ten_{dang}"] = p.stem
+    return dang
 
 
 def o_luu(ten_mac_dinh: str, khoa: str, dung_dong):
@@ -284,6 +542,13 @@ def group_by_video(hits: pd.DataFrame) -> pd.DataFrame:
     if "row_id" in hits.columns:
         cot.append("row_id")
     return g.join(hits.loc[g["row"], cot].reset_index(drop=True))
+
+
+@st.cache_data(show_spinner=False, max_entries=32)
+def diem_ca_video(video_id: str, query: str):
+    """Chấm MỌI khung của một video, kể cả khung không lọt vào kết quả."""
+    idx = np.flatnonzero(load_metadata()["video_id"].to_numpy() == video_id)
+    return idx, load_features_ram()[idx] @ encode_text(query)[0]
 
 
 def all_frames_of(video_id: str) -> pd.DataFrame:
@@ -377,6 +642,52 @@ def frame_card(hit, show_similar_button=True):
             st.rerun()
 
 
+def bang_mat_xich(hits, so_o: int = 3) -> None:
+    """Bày dãy khung mà chuỗi đã chọn cho từng cảnh.
+
+    Máy chấm điểm cho khung làm CẢNH ĐẦU rồi nộp chính nó, nhưng trên 14
+    câu nhiều cảnh của đề thật chỉ 8/14 đáp án nằm ở cảnh đầu. Mắt xích
+    rơi trúng đáp án với lệch trung vị 0,8 s, nên nó đáng được nhìn.
+    """
+    if "mat_xich" not in hits.columns or hits.empty:
+        return
+    meta = load_metadata()
+    with st.expander("🔗 Dãy khung của chuỗi cảnh — đáp án có thể ở cảnh SAU",
+                     expanded=True):
+        st.caption("Đề thật vòng 2: chỉ 8/14 đáp án nằm ở cảnh đầu, 6/14 ở "
+                   "cảnh sau. Mỗi hàng là một ứng viên, mỗi cột một cảnh.")
+        for _, h in hits.head(so_o).iterrows():
+            mx = h.get("mat_xich")
+            if not mx or int(mx[0]) < 0:
+                continue
+            cols = st.columns(len(mx))
+            for k, (col, rid) in enumerate(zip(cols, mx)):
+                r = meta.iloc[int(rid)]
+                with col:
+                    img = r.get("image_path", "")
+                    if img and Path(img).exists():
+                        st.image(img, width="stretch")
+                    st.caption(f"cảnh {k + 1} · {r['pts_time']:.0f}s")
+                    st.code(f"{r['video_id']}, {int(r['frame_idx'])}",
+                            language=None)
+            st.divider()
+
+
+def dong_nop_kis(nop, ca_mat_xich: bool, so_dong: int = 100) -> list:
+    """Danh sách nộp KIS. Phép xếp nằm ở nopbai.xen_mat_xich cho kiểm được.
+
+    Đo trên 9 câu đề thật có nhãn khung: FINAL 0,3556 → 0,5111, R@5 0,222
+    → 0,556. Trên bộ tự dựng (nhãn đã sửa cho nhận mọi mốc) thì HOÀ,
+    +0,0032 — một dương rõ và một hoà, chưa phải thắng cả hai bộ.
+    """
+    meta = load_metadata()
+    mx = (nop["mat_xich"].tolist()
+          if ca_mat_xich and "mat_xich" in nop.columns else None)
+    ids = nopbai.xen_mat_xich(nop["row_id"].tolist(), mx, so_dong)
+    return [nopbai.dong_kis(meta["video_id"].iloc[i],
+                            meta["frame_idx"].iloc[i]) for i in ids]
+
+
 def show_frames(df, ncol, similar=True):
     for start in range(0, len(df), ncol):
         cols = st.columns(ncol)
@@ -385,7 +696,7 @@ def show_frames(df, ncol, similar=True):
                 frame_card(hit, similar)
 
 
-def show_videos(hits, ncol):
+def show_videos(hits, ncol, query: str = ""):
     """Chế độ video: mỗi video một ô, bấm vào để bung toàn bộ khung của nó."""
     vids = group_by_video(hits)
     st.caption(f"{len(vids)} video — bấm **Mở** để xem mọi khung của video đó")
@@ -437,10 +748,37 @@ def show_videos(hits, ncol):
 
         frames = all_frames_of(vid)
         frames["row_id"] = frames.index
-        frames["score"] = frames["row_id"].map(hits.set_index("row_id")["score"])
-        st.caption(f"{len(frames)} khung, xếp theo thời gian. "
-                   f"Khung có điểm là khung đã lọt vào kết quả tìm kiếm.")
-        show_frames(frames.sort_values("n"), ncol, similar=False)
+        # Một video có trung vị 281 khung. Xếp theo THỜI GIAN thì khung đáp
+        # án nằm ở ô thứ 111 (trung vị, 81 truy vấn) — người thi phải liếc
+        # hết nửa video. Chấm lại mọi khung rồi xếp theo điểm: về ô thứ 1,
+        # và 91,4% truy vấn có đáp án trong 5 ô đầu.
+        co_diem = False
+        if query.strip():
+            try:
+                _i, _d = diem_ca_video(vid, query.strip())
+                frames["score"] = (pd.Series(_d, index=_i)
+                                   .reindex(frames["row_id"]).to_numpy())
+                co_diem = True
+            except Exception as e:      # nổ ở đây thì mất luôn cả bảng khung
+                st.caption(f":orange[không chấm lại được trong video: {e}]")
+        if not co_diem:
+            frames["score"] = frames["row_id"].map(
+                hits.set_index("row_id")["score"])
+
+        xep = st.radio(
+            "Xếp khung theo", ["điểm khớp (nên dùng)", "thời gian"],
+            horizontal=True, key=f"xep_{vid}", disabled=not co_diem,
+            help="Xếp theo điểm thì khung đáp án về ô thứ 1 (trung vị) và "
+                 "91,4% nằm trong 5 ô đầu; xếp theo thời gian thì nó nằm ở "
+                 "ô thứ 111. Đổi sang thời gian khi cần đọc mạch câu chuyện.")
+        theo_diem = co_diem and xep.startswith("điểm")
+        st.caption(
+            f"{len(frames)} khung, xếp theo "
+            + ("ĐIỂM khớp với câu truy vấn — mọi khung đều được chấm, "
+               "không chỉ khung đã lọt vào kết quả." if theo_diem
+               else "thời gian. Khung có điểm là khung đã lọt vào kết quả."))
+        show_frames(frames.sort_values("score", ascending=False) if theo_diem
+                    else frames.sort_values("n"), ncol, similar=False)
 
 
 st.title("RED-NEUTRONS — AIC 2026")
@@ -450,6 +788,21 @@ with st.sidebar:
                       help="Quét hết 50 ô rồi mới tìm lại — đo được là hơn hẳn "
                            "dừng ở 20 (phút 2: 0,610 so với 0,565).")
     cols_per_row = st.slider("Số cột", 3, 8, 5)
+
+    # Endpoint Google chặn theo IP khi gọi dồn, và lúc bị chặn thì im lặng lùi
+    # sang Gemini (0,7556 so với 0,7827) — phải nhìn thấy chứ đừng đoán.
+    import time as _tg
+    import translate as _tr
+    if not _tr.mach_mang_con_song():
+        _con = max(0, int(_tr._mo_lai_luc - _tg.time()))
+        st.warning(f"⚠ Google dịch đang bị chặn — đi đường Gemini. "
+                   f"Tự thử lại sau {_con}s.")
+        if st.button("Thử lại mạng ngay", key="mo_cau_dao"):
+            _tr.dong_lai_cau_dao()
+            st.rerun()
+    else:
+        st.caption(f":green[đường dịch: mạng Google] · kho **{len(_tr._CACHE)}** "
+                   f"câu (đã dịch rồi thì không tốn lượt)")
     view = st.radio(
         "Xem theo", ["Video (nên dùng)", "Khung"], index=0, horizontal=True,
         help="Đúng VIDEO 0,988 còn đúng KHUNG chỉ 0,654 — máy gần như luôn tìm "
@@ -557,7 +910,37 @@ with st.sidebar:
                     st.caption(_r.text.replace(chr(10), " · ")[:150])
 
     st.divider()
+    st.subheader("📥 Đề thi")
+    _tm = st.text_input("Thư mục BTC phát", str(DE_DIA), key="thu_muc_de",
+                        help="Trỏ vào thư mục chứa các file query-*.txt. Bấm một "
+                             "câu là nội dung tự vào đúng ô và tên file nộp tự "
+                             "đặt khớp — khỏi copy tay, khỏi gõ lệch tên.")
+    _de = nopbai.tep_de(_tm)
+    if not _de:
+        st.caption("Chưa thấy file `query-*.txt` nào trong thư mục này.")
+    else:
+        _xong = sum(1 for p in _de if f"{p.stem}.csv" in kho())
+        st.caption(f"**{_xong}/{len(_de)}** câu đã có bài trong kho")
+        st.progress(_xong / len(_de))
+        with st.expander(f"chọn câu ({len(_de)})", expanded=_xong < len(_de)):
+            for _p in _de:
+                _co = f"{_p.stem}.csv" in kho()
+                if st.button(f"{'✅' if _co else '⬜'} {_p.stem}",
+                             key=f"de_{_p.stem}", width="stretch"):
+                    nap_de(_p)
+                    st.rerun()
+    st.divider()
     st.subheader(f"📦 Kho bài nộp ({len(kho())})")
+    _dia = tep_tren_dia()
+    if _dia:
+        with st.expander(f"♻️ Khôi phục từ đĩa ({len(_dia)})"):
+            st.caption("Bài của phiên trước còn trên `submission/`. CHỌN đúng "
+                       "file của vòng này — file vòng trước mà nạp vào là lẫn "
+                       "sang bài nộp.")
+            for _t in _dia:
+                if st.button(f"♻️ {_t}", key=f"khoiphuc_{_t}", width="stretch"):
+                    kho()[_t] = doc_dia(_t)
+                    st.rerun()
     if not kho():
         st.caption("Trống. Tìm xong ở mỗi tab thì bấm **Lưu vào kho** — mỗi câu "
                    "truy vấn một file .csv, tối đa 100 dòng.")
@@ -585,11 +968,11 @@ tab_kis, tab_qa, tab_trake, tab_nop = st.tabs(
 
 
 with tab_kis:
-    query_vi = st.text_input(
-        "Gợi ý từ ban tổ chức (dán nguyên, tiếng Việt)",
+    query_vi = st.text_area(
+        "Gợi ý từ ban tổ chức (dán nguyên, tiếng Việt)", height=96, key="kis_q",
         placeholder="vd: người phụ nữ đội nón lá đang hái dứa ngoài ruộng",
-        help="Dán NGUYÊN văn gợi ý. Đo được: nhờ LLM viết lại cho 'đầy đủ hơn' "
-             "làm TỤT điểm ở mọi mức (phút 2: 0,486 → 0,403).")
+        help="Dán NGUYÊN văn gợi ý, kể cả nhiều dòng. Đo được: nhờ LLM viết lại "
+             "cho 'đầy đủ hơn' làm TỤT điểm ở mọi mức (phút 2: 0,486 → 0,403).")
 
     with st.expander("Cách xử lý câu"):
         tr_mode = st.selectbox(
@@ -598,6 +981,13 @@ with tab_kis:
                  "(+0,037). Quan trọng hơn: dịch kéo R@100 từ 0,901 lên 0,975 — "
                  "6 câu vốn KHÔNG lọt top-100 ở đâu cả nay đã hiện ra. ĐỪNG đổi "
                  "sang 'để nguyên' trừ khi mất mạng; hỏng thì nó tự lùi về câu gốc.")
+        loc_nhieu = st.checkbox(
+            "Lọc khung dẫn chuyện của BTC", value=True, key="kis_loc",
+            help="Bỏ chữ nói về VIỆC QUAY ('Đoạn clip cần tìm là cảnh…', 'Xuất "
+                 "hiện trong khung hình còn có…') và mệnh đề cảm thán ('tạo "
+                 "không khí yên bình'). Đo 29/08 trên 81 câu bọc NGUYÊN VĂN "
+                 "khuôn chữ BTC: không lọc 0,5086 → lọc 0,7086 (+0,200). Trên "
+                 "bộ đo sạch: 0,7160 cả hai — tức là bật lên KHÔNG mất gì.")
         query_en_override = st.text_input(
             "Hoặc tự viết câu tiếng Anh", placeholder="women in ao dai in a lotus field",
             help="Chỉ dùng khi bạn thật sự tả sát hình. Đo được: máy dịch đã "
@@ -658,21 +1048,50 @@ with tab_kis:
         show_frames(search_by_image(seed, top_k, same_only), cols_per_row, similar=False)
         st.divider()
 
+    # Lọc chạy TRƯỚC khi dịch: câu ngắn lại thì bản dịch cũng ngắn theo, và
+    # 64 token của SigLIP2 đỡ chật. Câu gốc vẫn giữ nguyên cho tầng VLM, vốn
+    # đọc được cả phần dẫn chuyện.
+    query_loc = loccau.bo_nhieu(query_vi) if loc_nhieu else (query_vi or "")
+    if loc_nhieu and query_loc.strip() and query_loc.strip() != (query_vi or "").strip():
+        with st.expander("đã lọc bớt chữ dẫn chuyện"):
+            st.caption(f"→ {query_loc}")
+
     if query_vi.strip() or query_en_override.strip():
         if query_en_override.strip():
             query, note = query_en_override.strip(), "→ dùng câu tiếng Anh bạn tự viết"
         elif tr_mode.startswith("dịch"):
             _ng = ham_nong_dich()      # nạp sẵn bộ dịch, chỉ chạy lần đầu
             with st.spinner("Đang dịch ..."):
-                query, note = preprocess_query(query_vi, "google")
+                # Gộp câu chính và các cảnh vào MỘT lượt gọi; hai chỗ dịch lẻ
+                # bên dưới sau đó chỉ đọc kho.
+                nong_dich([query_loc] + chuoi.tach_canh(query_loc))
+                query, note = preprocess_query(query_loc, "google")
             if _ng == "ngoại tuyến":
                 st.caption(":orange[Endpoint dịch qua mạng không phản hồi — đang "
                            "dùng mô hình trên máy. Không cần mạng, không tốn "
                            "khoá API.]")
         else:
-            query, note = preprocess_query(query_vi, "vi")
+            query, note = preprocess_query(query_loc, "vi")
         if note:
             st.caption(note)
+
+        # SigLIP2 chỉ đọc 64 token rồi vứt phần còn lại, KHÔNG báo gì. Đo 29/08:
+        # 12/18 câu KIS đề thật vòng 1 dính lỗi này. Nên phải bày ra tận mắt.
+        _tokz = load_clip()[1]
+        _ntok = loccau.dem(query, _tokz)
+        _cat = loccau.phan_giu_lai(query, _tokz)
+        if _cat is not None:
+            st.error(
+                f"✂️ Câu dài {_ntok}/{loccau.NGAN_SACH} token — encoder CẮT BỎ "
+                f"phần đuôi, nó chưa bao giờ đọc tới. Hãy bỏ bớt chữ, hoặc tách "
+                f"thành nhiều cảnh rồi bật chấm theo thứ tự.")
+            with st.expander("encoder thật sự đọc được đến đâu"):
+                st.caption(f"…{_cat}")
+        elif _ntok >= loccau.NGAN_SACH - 6:
+            st.caption(f":orange[{_ntok}/{loccau.NGAN_SACH} token — sát trần, "
+                       f"thêm một mệnh đề nữa là mất đuôi câu.]")
+        else:
+            st.caption(f"{_ntok}/{loccau.NGAN_SACH} token")
 
         # 70% câu KIS đợt 1 tả NHIỀU cảnh nối tiếp, mà bộ đo cũ có 0/81 câu
         # loại này. Nhồi cả câu vào một vector là bắt CLIP tìm một khung vừa
@@ -682,18 +1101,38 @@ with tab_kis:
         _mode = "google" if tr_mode.startswith("dịch") else "vi"
         if query_en_override.strip():
             _mode = "vi"   # người thi tự viết tiếng Anh: đừng dịch lại
-        _canh = [preprocess_query(c, _mode)[0] for c in chuoi.tach_canh(query_vi)]
-        _dung_chuoi = False
+        _canh = [preprocess_query(c, _mode)[0] for c in chuoi.tach_canh(query_loc)]
+        # Bật sẵn CHỈ KHI chính BTC xuống dòng tách cảnh — đó là lời khẳng định
+        # của người ra đề rằng đây là các cảnh khác nhau. Mốc chữ trong cùng một
+        # đoạn thì không chắc: "Loại topping này TRƯỚC ĐÓ đã được rắc lên tô
+        # cháo" vẫn đang tả đúng MỘT khung.
+        _theo_dong = len(chuoi.cat_dong(query_loc)) > 1
+        _dung_chuoi, _cua_so = False, chuoi.CUA_SO
         if len(_canh) > 1:
-            _dung_chuoi = st.checkbox(
-                f"Chấm theo THỨ TỰ {len(_canh)} cảnh (câu tả có mốc thời gian)",
-                value=True, key="kis_chuoi",
-                help="Cộng thêm điểm nếu SAU khung này, trong cùng video và "
-                     "trong 90 giây, có khung khớp cảnh kế tiếp. Chưa đo được "
-                     "trên bộ đo nào — bộ đo KIS hiện tại không có câu loại này.")
-            with st.expander(f"đã tách thành {len(_canh)} cảnh"):
+            with st.expander(
+                    f"đã tách thành {len(_canh)} cảnh"
+                    + ("" if _theo_dong else " (theo mốc chữ — hãy xem lại)")):
                 for _i, _c in enumerate(_canh, 1):
-                    st.caption(f"{_i}. {_c}")
+                    st.caption(f"**{_i}.** {_c}")
+            _dung_chuoi = st.checkbox(
+                f"Chấm theo THỨ TỰ {len(_canh)} cảnh"
+                + (" (BTC tự xuống dòng)" if _theo_dong else " (chỉ đoán từ mốc chữ)"),
+                value=_theo_dong, key="kis_chuoi",
+                help="Tìm cả một DÃY khung tăng dần theo thời gian trong "
+                     "cùng video, mỗi cảnh một khung, hai cảnh liền nhau "
+                     "cách nhau tối đa bấy nhiêu giây. Đo trên 14 câu nhiều "
+                     "cảnh của đề THẬT vòng 2: hạng-1 4/14 → 8/14, trung vị "
+                     "hạng 2 → 1. Điểm câu gốc vẫn giữ làm mỏ neo nhưng chỉ "
+                     "nặng 0,25 — bỏ hẳn thì có câu rơi khỏi 40.000 ô đầu.")
+            _cua_so = st.slider(
+                "Cửa sổ giữa hai cảnh liền nhau (giây)", 5, 300,
+                int(chuoi.CUA_SO), 5,
+                key="kis_cua_so", disabled=not _dung_chuoi,
+                help="Tính giữa HAI CẢNH LIỀN NHAU, không phải từ cảnh đầu — câu "
+                     "bốn cảnh với cửa sổ 60 s được trải tới 180 s. Quét "
+                     "30/45/60/90 trên cả hai bộ đo thì 60 thắng. Nới rộng "
+                     "khi đề tả những mốc cách xa nhau trong một quy trình "
+                     "dài (kiểu TRAKE).")
 
         depth = rerank_depth if use_vlm else 0
         deep = deep_to if (use_vlm and auto_deep) else 0
@@ -702,7 +1141,8 @@ with tab_kis:
                       mark_rows=st.session_state.get("marked") if uu_tien else None,
                       beta=beta,
                       thuong_video=3.0 if uu_tien else 0.3,
-                      canh=(_canh if _dung_chuoi else None))
+                      canh=(_canh if _dung_chuoi else None),
+                      cua_so=float(_cua_so) if _dung_chuoi else chuoi.CUA_SO)
 
         vlm_scores = None
         if use_vlm and depth:
@@ -731,19 +1171,34 @@ with tab_kis:
                          "**đáp án có thể không nằm trong rổ này**. Nên đổi cách diễn "
                          "đạt câu truy vấn, tăng độ sâu, hoặc tìm bằng ảnh.")
 
+        _goi_y_loi_noi(query_vi.strip() or query, hits)
+        _bang_goi_ten(query_vi.strip() or query, hits)
+        _bang_soi_khung(query_vi.strip() or query, hits)
+
         st.caption(f"{len(hits)} keyframes from {hits['video_id'].nunique()} videos")
 
         st.caption(f"{len(nop)} ứng viên · mã nộp nằm ngay dưới mỗi ảnh, "
                    f"bấm vào là chép được")
 
+        _co_mx = "mat_xich" in hits.columns
+        _nop_mx = False
+        if _co_mx:
+            _nop_mx = st.checkbox(
+                "Nộp cả mắt xích của chuỗi", value=True, key="kis_nop_mx",
+                help="Xen các khung cảnh 2..K vào danh sách nộp thay vì chỉ "
+                     "khung cảnh đầu. Đề thật (9 câu có nhãn khung): FINAL "
+                     "0,3556 → 0,5111, R@5 0,222 → 0,556. Bộ tự dựng, sau "
+                     "khi sửa nhãn cho nhận mọi mốc: HOÀ (+0,0032). Một "
+                     "dương rõ và một hoà — tắt được nếu muốn giữ cách cũ.")
+            bang_mat_xich(hits)
+
         # Nộp cả 100 dòng, không phải một. R@1 chỉ 0,481 còn R@100 là 0,951, mà
         # thể lệ không phạt dòng sai — dòng 2-100 là bảo hiểm miễn phí.
         o_luu("query-1-kis", "kis",
-              lambda: [nopbai.dong_kis(r.video_id, r.frame_idx)
-                       for r in nop.itertuples()])
+              lambda: dong_nop_kis(nop, _nop_mx))
 
         if video_mode:
-            show_videos(hits, cols_per_row)
+            show_videos(hits, cols_per_row, query=query)
         else:
             show_frames(hits, cols_per_row)
     else:
@@ -756,8 +1211,8 @@ with tab_qa:
         "Đề Q&A gồm **mô tả sự kiện + một câu hỏi**. Nộp `video_id, frame_id, answer`; "
         "**sai câu trả lời là 0 điểm dù tìm đúng khung** — đây là dạng duy nhất mà "
         "tìm kiếm giỏi vẫn có thể ăn 0.")
-    qa_desc = st.text_input(
-        "Mô tả sự kiện (tiếng Việt)", key="qa_desc",
+    qa_desc = st.text_area(
+        "Mô tả sự kiện (tiếng Việt)", height=96, key="qa_desc",
         placeholder="vd: một nhân viên vườn thú đang cho đàn chim ăn bên hồ nước",
         help="CHỈ mô tả mới được dùng để TÌM. Đo được: nhét thêm câu hỏi vào vector "
              "tìm kiếm không cải thiện gì (35,7%), dùng riêng câu hỏi thì tệ hẳn (7,1%).")
@@ -776,12 +1231,23 @@ with tab_qa:
                    if _goiy < qa_top else
                    f":orange[Câu này chỉ dùng ảnh — đo được rổ **{_goiy}** tốt "
                    f"hơn {qa_top} (+0,100).]")
+    # Mặc định phải theo CÂU HỎI, không phải luôn "nhận dạng". Đo trên 8 câu
+    # thật vòng 2: cách đọc-kỹ thắng ở mọi loại trừ câu đếm, ở đó nó về 0 vì
+    # chia ô cắt rời chính những vật đang phải đếm. Để mặc định sai thì câu đếm
+    # âm thầm đi nhầm đường mà không ai thấy.
+    _dem_goiy = qamod_la_dem(qa_ques)
+    if _dem_goiy and st.session_state.get("qa_kieu_cau") != qa_ques:
+        st.session_state["qa_kieu"] = "đếm"
+        st.session_state["qa_kieu_cau"] = qa_ques
     qa_kieu = st.radio(
         "Kiểu câu hỏi", ["nhận dạng", "đếm"], horizontal=True, key="qa_kieu",
         help="Chế độ đếm hỏi CẢ toàn khung LẪN từng ô rời, rồi chọn theo độ "
              "lớn: ít vật thì tin toàn khung (4/4), nhiều ký hiệu nhỏ thì cộng "
              "ô. Hai con số lệch nhau thì nó báo, đừng bỏ qua cảnh báo đó — "
              "vài chục ký hiệu nhỏ là chỗ VLM đếm mỗi lần một khác.")
+    if _dem_goiy:
+        st.caption(":orange[Câu hỏi có dạng ĐẾM VẬT nên đã tự chuyển sang chế độ "
+                   "đếm — chia ô để đọc kỹ sẽ cắt rời chính vật cần đếm.]")
     # Đo được: cùng một khung hỏi 5 lần ra 2, 3, 1, 1, 11. Chạy lại vài lần rồi
     # nhìn CẢ PHỔ là tín hiệu tin cậy duy nhất có thật cho câu đếm — khác hẳn
     # confidence do mô hình tự khai, thứ đã đo được là vô dụng.
@@ -796,6 +1262,26 @@ with tab_qa:
     if qa_marked:
         st.success(f"Đang dùng {len(qa_marked)} khung đánh dấu (đánh dấu ở tab KIS "
                    f"hoặc ngay trong kết quả bên dưới)")
+    # Khung đáp án Q&A thường KHÔNG nằm ở cảnh được tả: nó ở chỗ có cái
+    # được hỏi. Bó rổ vào đúng video đã đánh dấu thì rổ 30 ảnh chứa đáp án
+    # 4/5 thay vì 2/5 (8 câu hỏi thật, tính trên các câu video đã đúng).
+    qa_dich = st.checkbox(
+        "Dịch sang tiếng Anh trước khi tìm", value=True, key="qa_dich",
+        help="Tab KIS vốn đã dịch, tab này thì chưa. Đo trên 8 câu hỏi "
+             "thật, cho sẵn đúng video: rổ 30 chứa khung đáp án 6/8 khi "
+             "dịch, chỉ 5/8 khi để tiếng Việt thô.")
+    qa_bo_video = None
+    if qa_marked:
+        _mv = load_metadata()["video_id"].iloc[int(qa_marked[0])]
+        if st.checkbox(f"Dựng rổ TRONG video {_mv}", value=True,
+                       key="qa_bo_video_bat",
+                       help="Khung trả lời được câu hỏi thường không phải "
+                            "khung khớp mô tả — nó là chỗ có bảng nguyên "
+                            "liệu hay biển hiệu, có khi ở cuối video. Đo "
+                            "trên 8 câu hỏi thật: rổ 30 ảnh chứa đáp án "
+                            "4/5 thay vì 2/5. Chỉ bật khi bạn CHẮC video "
+                            "này đúng — bó nhầm video là mất trắng."):
+            qa_bo_video = str(_mv)
     qa_uu_tien = st.checkbox(
         "Ưu tiên video đã đánh dấu (chỉ bật khi CHẮC CHẮN)", value=False,
         key="qa_uu_tien",
@@ -827,9 +1313,19 @@ with tab_qa:
             st.warning("Cần câu hỏi để trả lời.")
         else:
             import qa as qamod
-            hits = search(qa_desc.strip(), max(qa_top, 100), ens_w=ens_w,
+            # DỊCH như tab KIS. Tab này vốn đưa thẳng tiếng Việt vào, mà
+            # dịch đáng 5/8 -> 6/8 ở khâu rổ (8 câu hỏi thật, rổ 30).
+            if qa_dich:
+                nong_dich([loccau.bo_nhieu(qa_desc.strip()), qa_ques.strip()])
+            _qd, _ = preprocess_query(loccau.bo_nhieu(qa_desc.strip()),
+                                      "google" if qa_dich else "vi")
+            _qh = (preprocess_query(qa_ques.strip(),
+                                    "google" if qa_dich else "vi")[0]
+                   if qa_ques.strip() else None)
+            hits = search(_qd, max(qa_top, 100), ens_w=ens_w,
                           mark_rows=qa_marked,
-                          thuong_video=3.0 if qa_uu_tien else 0.3)
+                          thuong_video=3.0 if qa_uu_tien else 0.3,
+                          trong_video=qa_bo_video, cau_hoi=_qh)
             if tra_loi:
                 with st.spinner("Đang hỏi VLM ..."):
                     st.session_state["qa_got"] = qamod.answer_over_hits(
@@ -987,7 +1483,10 @@ with tab_trake:
         help="Thứ tự dòng CHÍNH LÀ ràng buộc thời gian — hệ thống ép mốc sau phải "
              "nằm sau mốc trước. Đo được: ép thứ tự giảm lệch 828 → 444 frame và "
              "sửa 3/3 chuỗi khỏi bị đảo ngược thời gian.")
-    goc = [s.strip() for s in tk_moments.split("\n") if s.strip()]
+    goc, _boi_canh = chuoi.moc_trake(tk_moments)
+    if _boi_canh:
+        st.caption("bỏ khỏi danh sách mốc (là bối cảnh, không phải khoảnh "
+                   "khắc): " + " · ".join(f"*{d}*" for d in _boi_canh))
 
     tk_dich = st.checkbox(
         "Dịch từng mốc sang tiếng Anh", value=True, key="tk_dich",
@@ -1002,6 +1501,7 @@ with tab_trake:
     else:
         if tk_dich:
             with st.spinner("Đang dịch từng mốc ..."):
+                nong_dich(goc)
                 texts = [preprocess_query(t, "google")[0] for t in goc]
             if texts != goc:
                 st.caption("→ dịch: " + " · ".join(f"*{t}*" for t in texts))
@@ -1138,11 +1638,13 @@ with tab_nop:
         h2.markdown("<div style='height:1.8rem'></div>", unsafe_allow_html=True)
         if h2.button("Đổi tên", width="stretch") and ten_moi.strip() != chon:
             kho().pop(chon)
+            xoa_dia(chon)
             luu_kho(ten_moi, dong)
             st.rerun()
         h3.markdown("<div style='height:1.8rem'></div>", unsafe_allow_html=True)
         if h3.button("🗑 Xoá file", width="stretch"):
             kho().pop(chon)
+            xoa_dia(chon)
             st.rerun()
 
         c1, c2 = st.columns(2)
@@ -1157,6 +1659,7 @@ with tab_nop:
             a1, a2 = st.columns(2)
             if a1.button("✅ Áp dụng sửa", type="primary", width="stretch"):
                 kho()[chon] = [x for x in moi.split("\n") if x.strip()]
+                ghi_dia(chon, kho()[chon])
                 st.rerun()
             a2.download_button("⬇ Tải .csv này", nopbai.mot_tep(dong),
                                file_name=chon, mime="text/csv", width="stretch")

@@ -16,6 +16,8 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 import corpus  # noqa: E402  (ghép lại đường dẫn ảnh theo máy hiện tại)
 import rerank  # noqa: E402
+import chuoi   # noqa: E402  (tách cảnh, chấm theo thứ tự thời gian)
+import loccau  # noqa: E402  (lọc nhiễu + cắt vừa cửa sổ token)
 
 KS = [1, 5, 20, 50, 100]
 
@@ -195,6 +197,24 @@ if __name__ == "__main__":
     ap.add_argument("--ensemble", type=float, default=0.0, metavar="W",
                     help="cộng W·z(encoder phụ) trên TOÀN corpus (0 = tắt); "
                          "cả dải 0.2-1.5 đều dương, 0.5 cho 0.8148")
+    ap.add_argument("--loc", action="store_true",
+                    help="bỏ khung dẫn chuyện của BTC trước khi dịch/mã hoá "
+                         "(chỉ có nghĩa với --field text_vi)")
+    ap.add_argument("--chuoi", action="store_true",
+                    help="tách câu thành từng cảnh rồi CỘNG điểm thứ tự thời "
+                         "gian vào điểm câu gốc (chuoi.diem_chuoi) — cho câu "
+                         "tả nhiều cảnh nối tiếp, mỗi cảnh một dòng")
+    ap.add_argument("--alpha-nen", type=float, default=chuoi.ALPHA_NEN,
+                    dest="alpha_nen",
+                    help="trọng số vector nền khi gộp với điểm chuỗi; "
+                         "0 = chỉ tin chuỗi")
+    ap.add_argument("--cua-so", type=float, default=chuoi.CUA_SO,
+                    dest="cua_so",
+                    help="cửa sổ giây cho --chuoi: cảnh sau phải nằm trong bấy "
+                         "nhiêu giây sau cảnh trước (0 = không giới hạn)")
+    ap.add_argument("--manh", action="store_true",
+                    help="câu dài quá 64 token thì cắt theo câu, mã hoá từng "
+                         "mảnh rồi lấy trung bình — thay vì để tokenizer cắt cụt")
     ap.add_argument("--limit", type=int, default=0,
                     help="chỉ chạy N query đầu — để thử nhanh trước khi tốn cả "
                          "hạn mức API cho toàn bộ bộ eval")
@@ -229,6 +249,12 @@ if __name__ == "__main__":
               f"mốc đo trên đủ 81 query")
 
     texts = queries[args.field].tolist()
+    if args.loc:
+        goc = list(texts)
+        texts = [loccau.bo_nhieu(t) for t in texts]
+        print("[lọc] bỏ khung dẫn chuyện · ví dụ:")
+        print(f"  {goc[0]}")
+        print(f"   -> {texts[0]}")
     texts, secs = translate(texts, args.translate)
     if args.translate != "none":
         if secs:
@@ -238,23 +264,77 @@ if __name__ == "__main__":
             print(f"  {src}\n   -> {dst}")
 
     model, tokenizer = load_clip(clip_model, clip_pretrained)
-    qvecs = encode_batch(texts, model, tokenizer)
     # Trần của tầng chấm lại chính là R@D, nên rổ phải sâu ít nhất bằng độ sâu chấm.
     n_cand = max(max(KS),
                  args.rerank_depth if args.rerank != "none" else 0,
                  args.rerank_deep if args.rerank == "vlm-auto" else 0)
-    if args.ensemble > 0:
-        import ensemble as ens
-        print(f"[ensemble] + {args.ensemble}·z({ens.PHU[0]}) trên toàn corpus")
-    S = np.asarray(feats, dtype=np.float32) @ qvecs.T              # (n_kf, n_query)
-    ids = np.empty((len(qvecs), n_cand), dtype=np.int64)
-    scores = np.empty((len(qvecs), n_cand), dtype=np.float32)
-    for i, t in enumerate(texts):
-        tong = (ens.ghep(S[:, i], t, w=args.ensemble) if args.ensemble > 0
-                else S[:, i])
-        top = np.argsort(-tong, kind="stable")[:n_cand]
-        ids[i], scores[i] = top, tong[top]
-    del S
+
+    if args.chuoi:
+        # Mỗi cảnh mã hoá RIÊNG rồi cộng điểm theo thứ tự thời gian. Nhồi cả câu
+        # vào một vector thì vừa mất đuôi ở token 64, vừa bắt CLIP tìm một khung
+        # giống đồng thời mọi cảnh — thường chẳng khung nào như thế.
+        # CỘNG vào điểm câu gốc chứ không THAY: đo trên 9 câu nhiều cảnh của đề
+        # thật vòng 2, thay hẳn làm trung vị hạng tụt 41 -> 103, còn cộng thì
+        # nâng lên 11. Điểm gốc là mỏ neo giữ cho câu tách sai không trôi mất.
+        canh = [chuoi.tach_canh(t) for t in texts]
+        phang = [c for cs in canh for c in cs]
+        n_tach = sum(1 for c in canh if len(c) > 1)
+        qua = sum(1 for c in phang if int((tokenizer([c])[0] != 0).sum()) >= 64)
+        print(f"[chuỗi] {n_tach}/{len(texts)} câu tách được nhiều cảnh · "
+              f"{len(phang) / len(texts):.2f} cảnh/câu · {qua} cảnh vẫn tràn 64")
+        cvecs = encode_batch(phang, model, tokenizer)
+        nen = encode_batch(texts, model, tokenizer)
+        vid = pd.factorize(meta["video_id"])[0].astype(np.int64)
+        pts = meta["pts_time"].to_numpy(dtype=np.float32)
+        FF = np.asarray(feats, dtype=np.float32)
+        Sall, Snen = FF @ cvecs.T, FF @ nen.T
+        print(f"[chuỗi] cửa sổ {args.cua_so:g} s · α nền {args.alpha_nen:g}")
+        ids = np.empty((len(texts), n_cand), dtype=np.int64)
+        scores = np.empty((len(texts), n_cand), dtype=np.float32)
+        o = 0
+        for i, cs in enumerate(canh):
+            Sk = np.ascontiguousarray(Sall[:, o:o + len(cs)].T)
+            o += len(cs)
+            tong = chuoi.gop(
+                Snen[:, i],
+                chuoi.diem_chuoi(Sk, vid, pts, cua_so=args.cua_so),
+                alpha=args.alpha_nen)
+            top = np.argsort(-tong, kind="stable")[:n_cand]
+            ids[i], scores[i] = top, tong[top]
+        del Sall, Snen
+    elif args.manh:
+        dem = lambda t: int((tokenizer([t])[0] != 0).sum())
+        n_cat, tong_manh = 0, 0
+        qvecs = np.empty((len(texts), 0), dtype=np.float32)
+        ds = []
+        for t in texts:
+            manh = loccau.gom_vua_khung(loccau.tach_cau(t), dem)
+            tong_manh += len(manh)
+            n_cat += len(manh) > 1
+            v = encode_batch(manh, model, tokenizer).mean(0)
+            ds.append(v / (np.linalg.norm(v) + 1e-9))
+        qvecs = np.stack(ds).astype(np.float32)
+        print(f"[mảnh] {n_cat}/{len(texts)} câu phải cắt · "
+              f"{tong_manh / len(texts):.2f} mảnh/câu")
+    else:
+        tran = sum(1 for t in texts if int((tokenizer([t])[0] != 0).sum()) >= 64)
+        if tran:
+            print(f"[⚠] {tran}/{len(texts)} câu dùng hết 64 token — phần đuôi bị "
+                  f"tokenizer CẮT BỎ. Thử thêm --loc --manh.")
+        qvecs = encode_batch(texts, model, tokenizer)
+    if not args.chuoi:
+        if args.ensemble > 0:
+            import ensemble as ens
+            print(f"[ensemble] + {args.ensemble}·z({ens.PHU[0]}) trên toàn corpus")
+        S = np.asarray(feats, dtype=np.float32) @ qvecs.T          # (n_kf, n_query)
+        ids = np.empty((len(qvecs), n_cand), dtype=np.int64)
+        scores = np.empty((len(qvecs), n_cand), dtype=np.float32)
+        for i, t in enumerate(texts):
+            tong = (ens.ghep(S[:, i], t, w=args.ensemble) if args.ensemble > 0
+                    else S[:, i])
+            top = np.argsort(-tong, kind="stable")[:n_cand]
+            ids[i], scores[i] = top, tong[top]
+        del S
 
     n_bad_basket = n_deep = 0
     if args.rerank != "none":

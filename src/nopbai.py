@@ -20,6 +20,33 @@ def _boc(s) -> str:
 
 # Không đặt khoảng trắng sau dấu phẩy: thể lệ giữ nguyên khoảng trắng đầu/cuối
 # trường, mà ngoặc kép chỉ có hiệu lực khi đứng ở KÝ TỰ ĐẦU của trường.
+def xen_mat_xich(neo, mat_xich=None, so_dong: int = 100) -> list[int]:
+    """Thứ tự khung để nộp: chỉ khung neo, hay xen cả mắt xích của nó?
+
+    `neo` là chỉ số khung xếp theo điểm; `mat_xich[i]` là dãy khung mà
+    chuỗi đã chọn cho từng cảnh khi khung neo[i] làm cảnh đầu (None hoặc
+    dãy bắt đầu bằng số âm nghĩa là không dựng nổi dãy).
+
+    Máy chấm điểm cho khung làm CẢNH ĐẦU rồi nộp chính nó, nhưng trên 14
+    câu nhiều cảnh của đề thật chỉ 8/14 đáp án nằm ở cảnh đầu; mắt xích
+    rơi trúng đáp án với lệch trung vị 0,8 s.
+    """
+    ds, thay = [], set()
+    for i, a in enumerate(neo):
+        mx = mat_xich[i] if mat_xich is not None else None
+        cum = list(mx) if (mx is not None and len(mx) and int(mx[0]) >= 0) \
+            else [a]
+        for c in cum:
+            c = int(c)
+            if c in thay:
+                continue
+            thay.add(c)
+            ds.append(c)
+            if len(ds) >= so_dong:
+                return ds
+    return ds
+
+
 def dong_kis(video_id: str, frame_idx) -> str:
     return f"{video_id},{int(frame_idx)}"
 
@@ -48,6 +75,25 @@ def dang_cua(ten: str) -> str | None:
     goc = ten[:-4] if ten.endswith(".csv") else ten
     m = TEN_HOP_LE.match(goc)
     return m.group(1) if m else None
+
+
+def tep_de(thu_muc) -> list:
+    """File đề .txt BTC phát, sắp theo SỐ.
+
+    Sắp theo chữ thì query-10 đứng trước query-2, và giữa giờ thi mắt người
+    quét danh sách 30 dòng lệch thứ tự là bấm nhầm câu.
+    """
+    from pathlib import Path
+    try:
+        fs = [p for p in Path(thu_muc).rglob("query-*.txt") if p.is_file()]
+    except OSError:
+        return []
+
+    def khoa(p):
+        so = re.findall(r"(\d+)", p.stem)
+        return (int(so[-1]) if so else 0, p.stem)
+
+    return sorted(fs, key=khoa)
 
 
 def kiem_tep(ten: str, dong: list[str]) -> list[str]:
